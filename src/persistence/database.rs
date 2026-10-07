@@ -1,0 +1,360 @@
+use std::{path::Path, str::FromStr};
+
+use chrono::Utc;
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
+
+use crate::{
+    domain::{AppSettings, DownloadJob, JobStatus},
+    error::{AppError, AppResult},
+};
+
+#[derive(Clone)]
+pub struct Database {
+    pool: SqlitePool,
+}
+
+impl Database {
+    pub async fn connect(path: &Path) -> AppResult<Self> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", path.to_string_lossy()))?
+                .create_if_missing(true)
+                .foreign_keys(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(|e| AppError::Database(e.into()))?;
+        Ok(Self { pool })
+    }
+
+    pub async fn settings(&self) -> AppResult<AppSettings> {
+        let value =
+            sqlx::query_scalar::<_, String>("SELECT value_json FROM settings WHERE singleton = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        match value {
+            Some(value) => Ok(serde_json::from_str(&value)?),
+            None => Ok(AppSettings::default()),
+        }
+    }
+
+    pub async fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
+        let value = serde_json::to_string(settings)?;
+        sqlx::query("INSERT INTO settings(singleton,value_json,schema_version,updated_at) VALUES(1,?,1,?) ON CONFLICT(singleton) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at")
+            .bind(value).bind(Utc::now().to_rfc3339()).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn recover_interrupted(&self) -> AppResult<()> {
+        sqlx::query("UPDATE jobs SET status='interrupted', error_category='interrupted', error_message='The app closed before this job finished', finished_at=?, revision=revision+1 WHERE status IN ('analyzing','downloading','post_processing')")
+            .bind(Utc::now().to_rfc3339()).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn next_position(&self) -> AppResult<i64> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(queue_position), -1) + 1 FROM jobs WHERE in_queue=1",
+        )
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn insert_job(&self, job: &DownloadJob, position: i64) -> AppResult<()> {
+        sqlx::query("INSERT INTO jobs(id,request_json,title,status,progress_json,created_at,started_at,finished_at,output_path,error_category,error_message,diagnostics_json,queue_position,in_queue) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)")
+            .bind(&job.id).bind(serde_json::to_string(&job.request)?).bind(&job.title).bind(job.status.as_str())
+            .bind(serde_json::to_string(&job.progress)?).bind(&job.created_at).bind(&job.started_at).bind(&job.finished_at)
+            .bind(&job.output_path).bind(&job.error_category).bind(&job.error_message).bind(serde_json::to_string(&job.diagnostics)?).bind(position)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn update_job(&self, job: &DownloadJob) -> AppResult<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE jobs SET title=?,status=?,progress_json=?,started_at=?,finished_at=?,output_path=?,error_category=?,error_message=?,diagnostics_json=?,revision=revision+1 WHERE id=?")
+            .bind(&job.title).bind(job.status.as_str()).bind(serde_json::to_string(&job.progress)?).bind(&job.started_at).bind(&job.finished_at)
+            .bind(&job.output_path).bind(&job.error_category).bind(&job.error_message).bind(serde_json::to_string(&job.diagnostics)?).bind(&job.id)
+            .execute(&mut *transaction).await?;
+        if matches!(
+            job.status,
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+        ) {
+            sqlx::query("INSERT INTO history(job_id,finished_at) VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET finished_at=excluded.finished_at")
+                .bind(&job.id).bind(job.finished_at.as_deref().unwrap_or(&job.created_at)).execute(&mut *transaction).await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn queue(&self) -> AppResult<Vec<DownloadJob>> {
+        self.load_jobs("SELECT * FROM jobs WHERE in_queue=1 ORDER BY queue_position, created_at")
+            .await
+    }
+
+    pub async fn history(&self) -> AppResult<Vec<DownloadJob>> {
+        self.load_jobs("SELECT jobs.* FROM jobs JOIN history ON history.job_id=jobs.id ORDER BY history.finished_at DESC").await
+    }
+
+    async fn load_jobs(&self, sql: &'static str) -> AppResult<Vec<DownloadJob>> {
+        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        rows.iter().map(job_from_row).collect()
+    }
+
+    pub async fn job(&self, id: &str) -> AppResult<DownloadJob> {
+        let row = sqlx::query("SELECT * FROM jobs WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        job_from_row(&row)
+    }
+
+    /// Removes a finished or waiting job from the downloads list and history.
+    /// Running jobs are left alone; the media file is never touched.
+    pub async fn remove_job(&self, id: &str) -> AppResult<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE jobs SET in_queue=0 WHERE id=? AND status NOT IN ('analyzing','downloading','post_processing')")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM history WHERE job_id IN (SELECT id FROM jobs WHERE id=? AND status NOT IN ('analyzing','downloading','post_processing'))")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Removes completed records from the downloads list. Media files are untouched;
+    /// failed, cancelled, and interrupted records stay so they can be retried.
+    pub async fn clear_completed(&self) -> AppResult<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM history WHERE job_id IN (SELECT id FROM jobs WHERE status='completed')",
+        )
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("UPDATE jobs SET in_queue=0 WHERE status='completed'")
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn reorder(&self, id: &str, direction: &str) -> AppResult<()> {
+        let current = sqlx::query(
+            "SELECT queue_position FROM jobs WHERE id=? AND status='queued' AND in_queue=1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(current) = current else {
+            return Ok(());
+        };
+        let current_pos: i64 = current.get("queue_position");
+        let neighbor = if direction == "up" {
+            sqlx::query("SELECT id,queue_position FROM jobs WHERE status='queued' AND in_queue=1 AND queue_position < ? ORDER BY queue_position DESC LIMIT 1").bind(current_pos).fetch_optional(&self.pool).await?
+        } else {
+            sqlx::query("SELECT id,queue_position FROM jobs WHERE status='queued' AND in_queue=1 AND queue_position > ? ORDER BY queue_position ASC LIMIT 1").bind(current_pos).fetch_optional(&self.pool).await?
+        };
+        if let Some(neighbor) = neighbor {
+            let neighbor_id: String = neighbor.get("id");
+            let neighbor_pos: i64 = neighbor.get("queue_position");
+            let mut transaction = self.pool.begin().await?;
+            sqlx::query("UPDATE jobs SET queue_position=? WHERE id=?")
+                .bind(neighbor_pos)
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("UPDATE jobs SET queue_position=? WHERE id=?")
+                .bind(current_pos)
+                .bind(neighbor_id)
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+        }
+        Ok(())
+    }
+}
+
+fn job_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<DownloadJob> {
+    let status = match row.get::<String, _>("status").as_str() {
+        "queued" => JobStatus::Queued,
+        "analyzing" => JobStatus::Analyzing,
+        "downloading" => JobStatus::Downloading,
+        "post_processing" => JobStatus::PostProcessing,
+        "completed" => JobStatus::Completed,
+        "failed" => JobStatus::Failed,
+        "cancelled" => JobStatus::Cancelled,
+        "interrupted" => JobStatus::Interrupted,
+        other => {
+            return Err(AppError::Parse(format!(
+                "Unknown stored job state: {other}"
+            )));
+        }
+    };
+    Ok(DownloadJob {
+        id: row.get("id"),
+        request: serde_json::from_str(&row.get::<String, _>("request_json"))?,
+        title: row.get("title"),
+        status,
+        progress: serde_json::from_str(&row.get::<String, _>("progress_json"))?,
+        created_at: row.get("created_at"),
+        started_at: row.get("started_at"),
+        finished_at: row.get("finished_at"),
+        output_path: row.get("output_path"),
+        error_category: row.get("error_category"),
+        error_message: row.get("error_message"),
+        diagnostics: serde_json::from_str(&row.get::<String, _>("diagnostics_json"))?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{DownloadOptions, DownloadProgress, DownloadRequest};
+
+    fn job(status: JobStatus) -> DownloadJob {
+        DownloadJob {
+            id: "job-1".into(),
+            request: DownloadRequest {
+                url: "https://example.com/video".into(),
+                destination: if cfg!(windows) {
+                    r"C:\Downloads".into()
+                } else {
+                    "/tmp".into()
+                },
+                filename_template: "%(title)s.%(ext)s".into(),
+                is_playlist: false,
+                options: DownloadOptions::default(),
+            },
+            title: Some("Test".into()),
+            status,
+            progress: DownloadProgress::default(),
+            created_at: Utc::now().to_rfc3339(),
+            started_at: None,
+            finished_at: None,
+            output_path: None,
+            error_category: None,
+            error_message: None,
+            diagnostics: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn migrations_and_restart_recovery_preserve_jobs() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::connect(&directory.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        db.insert_job(&job(JobStatus::Downloading), 0)
+            .await
+            .unwrap();
+        db.recover_interrupted().await.unwrap();
+        let restored = db.job("job-1").await.unwrap();
+        assert_eq!(restored.status, JobStatus::Interrupted);
+    }
+
+    #[tokio::test]
+    async fn clearing_completed_keeps_records_that_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::connect(&directory.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        let mut completed = job(JobStatus::Completed);
+        completed.finished_at = Some(Utc::now().to_rfc3339());
+        db.insert_job(&completed, 0).await.unwrap();
+        db.update_job(&completed).await.unwrap();
+        let mut failed = job(JobStatus::Failed);
+        failed.id = "job-2".into();
+        failed.finished_at = Some(Utc::now().to_rfc3339());
+        db.insert_job(&failed, 1).await.unwrap();
+        db.update_job(&failed).await.unwrap();
+
+        db.clear_completed().await.unwrap();
+
+        let queue = db.queue().await.unwrap();
+        let history = db.history().await.unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, "job-2");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "job-2");
+    }
+
+    #[tokio::test]
+    async fn removing_a_job_hides_it_but_never_a_running_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::connect(&directory.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        let mut failed = job(JobStatus::Failed);
+        failed.finished_at = Some(Utc::now().to_rfc3339());
+        db.insert_job(&failed, 0).await.unwrap();
+        db.update_job(&failed).await.unwrap();
+        let mut running = job(JobStatus::Downloading);
+        running.id = "job-2".into();
+        db.insert_job(&running, 1).await.unwrap();
+
+        db.remove_job("job-1").await.unwrap();
+        db.remove_job("job-2").await.unwrap();
+
+        let queue = db.queue().await.unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, "job-2");
+        assert!(db.history().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reordering_swaps_waiting_jobs() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::connect(&directory.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        for (index, id) in ["a", "b", "c"].into_iter().enumerate() {
+            let mut queued = job(JobStatus::Queued);
+            queued.id = id.into();
+            db.insert_job(&queued, index as i64).await.unwrap();
+        }
+        db.reorder("c", "up").await.unwrap();
+        let order = db
+            .queue()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|job| job.id)
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["a", "c", "b"]);
+    }
+
+    #[tokio::test]
+    async fn last_download_directory_survives_a_database_reconnect() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("test.sqlite3");
+        let db = Database::connect(&database_path).await.unwrap();
+        let recent = if cfg!(windows) {
+            r"D:\Saved videos"
+        } else {
+            "/media/saved-videos"
+        };
+        let settings = AppSettings {
+            last_download_directory: Some(recent.into()),
+            ..AppSettings::default()
+        };
+        db.save_settings(&settings).await.unwrap();
+        drop(db);
+
+        let reopened = Database::connect(&database_path).await.unwrap();
+        let restored = reopened.settings().await.unwrap();
+        assert_eq!(restored.last_download_directory.as_deref(), Some(recent));
+    }
+}

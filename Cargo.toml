@@ -1,0 +1,64 @@
+[package]
+name = "yt-dlp-tui"
+version = "0.1.0"
+description = "A keyboard-driven terminal interface for yt-dlp"
+authors = ["yt-dlp TUI contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/NitroDiesel/yt-dlp-tui"
+edition = "2024"
+rust-version = "1.94"
+default-run = "yt-dlp-tui"
+
+[lib]
+name = "yt_dlp_tui"
+
+[[bin]]
+name = "yt-dlp-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-ytdlp"
+path = "src/bin/fake-ytdlp.rs"
+test = false
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+crossterm = "0.29.0"
+dirs = "6.0.0"
+futures = "0.3.34"
+liblzma = { version = "0.4.8", features = ["static"] }
+ratatui = "0.30.2"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "migrate"] }
+tar = "0.4.46"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["process", "rt-multi-thread", "macros", "io-util", "sync", "time", "fs"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+unicode-width = "0.2.2"
+ureq = "3.4.2"
+url = "2.5.8"
+uuid = { version = "1.27.0", features = ["v4", "serde"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.0", features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+portable-pty = "0.9.0"
+tempfile = "3.27.0"
+vt100 = "0.16.2"
+
+# Dependencies build without debug info, so debug builds and the target
+# folder stay much smaller. The app's own crate keeps full debug info.
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+strip = true

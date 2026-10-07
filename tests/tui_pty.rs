@@ -1,0 +1,321 @@
+//! Drives the real binary in a pseudo-terminal against the fake engine and
+//! reads the screen through a terminal emulator, the way a person would.
+//! Run with `--nocapture` to print each screen.
+
+use std::{
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    sync::mpsc::{Receiver, channel},
+    time::{Duration, Instant},
+};
+
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+
+const ROWS: u16 = 36;
+const COLUMNS: u16 = 120;
+
+struct Session {
+    _master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
+    output: Receiver<Vec<u8>>,
+    screen: vt100::Parser,
+}
+
+impl Session {
+    fn start(home: &Path, tools: &Path) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: ROWS,
+                cols: COLUMNS,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_yt-dlp-tui"));
+        command.env_clear();
+        command.env("HOME", home);
+        command.env("TERM", "xterm-256color");
+        command.env("PATH", "/usr/bin:/bin");
+        command.env("YT_DLP_TUI_DATA_DIR", home.join("data"));
+        command.env("YT_DLP_TUI_TOOLS_DIR", tools);
+        command.cwd(home);
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let (sender, output) = channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            while let Ok(read) = reader.read(&mut buffer) {
+                if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            _master: pair.master,
+            child,
+            writer,
+            output,
+            screen: vt100::Parser::new(ROWS, COLUMNS, 0),
+        }
+    }
+
+    fn contents(&self) -> String {
+        self.screen.screen().contents()
+    }
+
+    fn pump(&mut self, wait: Duration) {
+        if let Ok(bytes) = self.output.recv_timeout(wait) {
+            self.screen.process(&bytes);
+            while let Ok(bytes) = self.output.try_recv() {
+                self.screen.process(&bytes);
+            }
+        }
+    }
+
+    fn wait_for(&mut self, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if self.contents().contains(text) {
+                return;
+            }
+            self.pump(Duration::from_millis(50));
+        }
+        panic!(
+            "timed out waiting for {text:?}. Screen:\n{}",
+            self.contents()
+        );
+    }
+
+    fn send(&mut self, bytes: &str) {
+        self.writer.write_all(bytes.as_bytes()).unwrap();
+        self.writer.flush().unwrap();
+        // Let the app read the key before the next one, so a lone Escape
+        // isn't merged with what follows.
+        self.pump(Duration::from_millis(150));
+    }
+
+    fn snapshot(&mut self, title: &str) {
+        self.pump(Duration::from_millis(200));
+        println!("──── {title} ────\n{}\n", self.contents());
+    }
+}
+
+fn fake_tools() -> tempfile::TempDir {
+    let tools = tempfile::tempdir().unwrap();
+    let engine = PathBuf::from(env!("CARGO_BIN_EXE_fake-ytdlp"));
+    std::fs::copy(&engine, tools.path().join("yt-dlp")).unwrap();
+    tools
+}
+
+#[test]
+fn pastes_a_link_downloads_it_and_navigates_the_app() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+
+    session.wait_for("Paste a link to start");
+    session.wait_for("FFmpeg missing");
+    assert!(session.contents().contains("Not installed yet"));
+    session.snapshot("First launch");
+
+    // Pasting a link anywhere opens New download and reads it.
+    session.send("\x1b[200~watch https://example.test/slow now\x1b[201~");
+    session.wait_for("Fixture channel on example.test");
+    session.wait_for("Add to queue");
+    session.snapshot("Link analyzed");
+
+    session.send("\x04");
+    session.wait_for("Downloading");
+    session.wait_for("MB/s");
+    session.snapshot("Downloading");
+    session.wait_for("Completed 1  Stopped");
+    session.snapshot("Completed");
+    let saved = home.path().join("Downloads").join("Fixture media.webm");
+    assert!(saved.is_file(), "the download lands in ~/Downloads");
+
+    session.send("?");
+    session.wait_for("Move a waiting download up or down");
+    session.snapshot("Help");
+    session.send("x");
+
+    session.send("s");
+    session.wait_for("Download engine");
+    session.wait_for("2026.08.19");
+    session.snapshot("Settings");
+    session.send("\x1b");
+    session.wait_for("All downloads");
+
+    session.send("n");
+    session.wait_for("Paste a video, playlist, or channel link");
+    session.send("https://example.test/failure\r");
+    session.wait_for("Couldn't read that link");
+    session.snapshot("Analysis failed");
+    session.send("\x1b");
+
+    session.send("q");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = session.child.try_wait().unwrap() {
+            assert!(status.success(), "quits cleanly: {status:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the app quits");
+        session.pump(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_exit(session: &mut Session) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = session.child.try_wait().unwrap() {
+            assert!(status.success(), "quits cleanly: {status:?}");
+            return;
+        }
+        assert!(Instant::now() < deadline, "the app quits");
+        session.pump(Duration::from_millis(50));
+    }
+}
+
+const DOWN: &str = "\x1b[B";
+const RIGHT: &str = "\x1b[C";
+
+#[test]
+fn saves_settings_that_survive_a_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    session.send("s");
+    session.wait_for("Downloads at once");
+    // Default folder, File name, Default type, Default quality, Downloads at once.
+    for _ in 0..4 {
+        session.send(DOWN);
+    }
+    session.send(RIGHT);
+    session.wait_for("You have unsaved changes");
+    session.send("\x13");
+    session.wait_for("Settings saved");
+    session.send("\x1b");
+    session.send("q");
+    wait_for_exit(&mut session);
+
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    session.send("s");
+    session.wait_for("Downloads at once    2");
+    session.send("\x1b");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn confirms_whole_playlists_and_offers_current_sponsorblock_segments() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+
+    session.send("\x1b[200~https://example.test/video\x1b[201~");
+    session.wait_for("Add to queue");
+    session.wait_for("Show advanced options");
+    // Kind, Quality, Container, Video codec, Clip, Save to, Advanced.
+    for _ in 0..6 {
+        session.send(DOWN);
+    }
+    session.send("\r");
+    session.wait_for("Hide advanced options");
+    // Subtitles (2 rows), Chapters (3 rows), then SponsorBlock.
+    for _ in 0..6 {
+        session.send(DOWN);
+    }
+    session.send(RIGHT);
+    session.wait_for("Mark segments as chapters");
+    session.send(DOWN);
+    session.send("\r");
+    session.wait_for("Hooks and greetings");
+    session.wait_for("Highlight (mark only)");
+    session.snapshot("SponsorBlock segments");
+    session.send("\x1b");
+    session.send("\x1b");
+
+    session.send("\x1b[200~https://example.test/playlist\x1b[201~");
+    session.wait_for("Playlist of 3");
+    session.send("\x04");
+    session.wait_for("This will download all 3 items. Continue?");
+    session.snapshot("Playlist confirmation");
+    session.send("\r");
+    session.wait_for("Fixture playlist");
+    session.wait_for("Completed 1  Stopped");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn quitting_mid_download_leaves_it_ready_to_resume() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    session.send("\x1b[200~https://example.test/cancel\x1b[201~");
+    session.wait_for("Add to queue");
+    session.send("\x04");
+    session.wait_for("Active 1");
+    session.send("q");
+    session.wait_for("1 download is running and will stop");
+    session.snapshot("Quit confirmation");
+    session.send("\r");
+    wait_for_exit(&mut session);
+
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Stopped 1");
+    session.wait_for("Interrupted");
+    session.wait_for("r retry");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn refuses_to_run_twice_on_the_same_data() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut first = Session::start(home.path(), tools.path());
+    first.wait_for("Paste a link to start");
+    let mut second = Session::start(home.path(), tools.path());
+    second.wait_for("already running in another terminal");
+    first.send("q");
+}
+
+/// The whole path with the real pinned tools and network: see
+/// `tests/live_download.rs` for how to install them and set the variable.
+#[test]
+#[ignore = "downloads from YouTube with the installed pinned tools"]
+fn downloads_through_the_interface_with_the_pinned_engine() {
+    let tools = PathBuf::from(
+        std::env::var_os("YT_DLP_TUI_LIVE_TOOLS")
+            .expect("set YT_DLP_TUI_LIVE_TOOLS to the installed tools folder"),
+    );
+    let home = tempfile::tempdir().unwrap();
+    let mut session = Session::start(home.path(), &tools);
+    session.wait_for("Engine ready");
+    session.send("\x1b[200~https://www.youtube.com/watch?v=jNQXAC9IVRw\x1b[201~");
+    session.wait_for("jawed on youtube.com");
+    session.wait_for("Add to queue");
+    session.snapshot("Analyzed with yt-dlp 2026.08.19");
+    session.send("\x04");
+    session.wait_for("Completed 1  Stopped");
+    session.snapshot("Downloaded");
+    let saved = std::fs::read_dir(home.path().join("Downloads"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        saved.iter().any(|name| name.starts_with("Me at the zoo")),
+        "{saved:?}"
+    );
+    session.send("q");
+    wait_for_exit(&mut session);
+}
