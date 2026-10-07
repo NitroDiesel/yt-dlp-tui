@@ -18,7 +18,9 @@ A keyboard-driven terminal interface for [yt-dlp](https://github.com/yt-dlp/yt-d
 
 ## Install
 
-Requires Rust 1.94 or newer.
+Download the archive for your platform from the [Releases page](https://github.com/NitroDiesel/yt-dlp-tui/releases), check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui install-tools`, then `./yt-dlp-tui`.
+
+To build from source instead (Rust 1.94 or newer):
 
 ```sh
 cargo install --path .
@@ -76,6 +78,7 @@ cargo test --test live_download --test tui_pty -- --ignored --nocapture
 
 - [Architecture and security decisions](docs/ARCHITECTURE.md)
 - [Audited yt-dlp capability mapping](docs/CAPABILITY_AUDIT.md)
+- [Releasing](docs/RELEASING.md) and the [changelog](CHANGELOG.md)
 - [Agent guide](AGENTS.md)
 
 ## License

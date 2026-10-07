@@ -7,6 +7,7 @@ Start here for coding-agent work in this repository.
 - `README.md`: capabilities, keys, supported platforms, and the checks to run.
 - `docs/ARCHITECTURE.md`: before changing the event loop, process execution, persistence, tool resolution, the installer, or open/reveal.
 - `docs/CAPABILITY_AUDIT.md`: before changing yt-dlp option coverage or the pinned versions.
+- `docs/RELEASING.md`: before changing versions, tags, the changelog, or the release workflow.
 
 Update the relevant document when a change makes it inaccurate.
 
