@@ -1,6 +1,7 @@
 mod app;
 mod form;
 pub mod format;
+pub mod mouse;
 mod new_download;
 mod settings;
 mod text_input;
@@ -10,7 +11,9 @@ mod view;
 use std::{io::stdout, sync::Arc, time::Duration};
 
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste, Event},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    },
     execute,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -53,18 +56,37 @@ pub async fn run(
     let (event_tx, mut events) = unbounded_channel();
     let reader = spawn_reader(event_tx);
     let mut ticker = tokio::time::interval(TICK);
+    let mut mouse = false;
+    let mut redraw = true;
     let result = loop {
-        if let Err(error) = terminal.draw(|frame| view::render(frame, &mut app)) {
+        // Capture the mouse only while the setting asks for it, so turning it
+        // off hands selection back to the terminal at once.
+        if app.settings.mouse != mouse {
+            mouse = app.settings.mouse;
+            let _ = if mouse {
+                execute!(stdout(), EnableMouseCapture)
+            } else {
+                execute!(stdout(), DisableMouseCapture)
+            };
+        }
+        if redraw && let Err(error) = terminal.draw(|frame| view::render(frame, &mut app)) {
             break Err(error.into());
         }
-        tokio::select! {
+        redraw = tokio::select! {
             Some(event) = events.recv() => app.handle_event(event),
-            Some(message) = messages.recv() => app.handle_message(message),
-            Some(event) = service_events.recv() => app.handle_service(event),
+            Some(message) = messages.recv() => {
+                app.handle_message(message);
+                true
+            }
+            Some(event) = service_events.recv() => {
+                app.handle_service(event);
+                true
+            }
             _ = ticker.tick() => {
                 app.tick();
+                true
             }
-        }
+        };
         if app.should_quit {
             break Ok(());
         }
@@ -89,10 +111,10 @@ pub async fn run(
 
 fn enter_terminal() -> AppResult<ratatui::DefaultTerminal> {
     let terminal = ratatui::init();
-    // ratatui's hook restores raw mode and the screen; bracketed paste is ours.
+    // ratatui's hook restores raw mode and the screen; paste and mouse are ours.
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableBracketedPaste);
+        let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
         restore(info);
     }));
     execute!(stdout(), EnableBracketedPaste)?;
@@ -100,7 +122,7 @@ fn enter_terminal() -> AppResult<ratatui::DefaultTerminal> {
 }
 
 fn leave_terminal() {
-    let _ = execute!(stdout(), DisableBracketedPaste);
+    let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
 }
 

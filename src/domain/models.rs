@@ -588,6 +588,9 @@ pub struct AppSettings {
     /// "blue", "violet", "pink", or "graphite".
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// Clicks, scrolling, and hover. Off leaves the mouse to the terminal.
+    #[serde(default = "default_mouse")]
+    pub mouse: bool,
     pub yt_dlp_path: Option<String>,
     pub ffmpeg_path: Option<String>,
     pub deno_path: Option<String>,
@@ -623,6 +626,10 @@ fn default_accent() -> String {
     "blue".into()
 }
 
+fn default_mouse() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         let download_directory = dirs::download_dir()
@@ -638,6 +645,7 @@ impl Default for AppSettings {
             default_quality: "best".into(),
             queue_concurrency: 1,
             accent: default_accent(),
+            mouse: default_mouse(),
             yt_dlp_path: None,
             ffmpeg_path: None,
             deno_path: None,
@@ -813,6 +821,7 @@ mod tests {
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert!(settings.last_download_directory.is_none());
         assert_eq!(settings.accent, "blue");
+        assert!(settings.mouse, "mouse support starts on");
     }
 
     #[test]

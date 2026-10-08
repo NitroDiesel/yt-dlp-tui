@@ -105,6 +105,7 @@ pub enum Field {
     FfmpegPath,
     DenoPath,
     Accent,
+    Mouse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,7 +337,32 @@ impl SettingsForm {
                 _ => {}
             }
         }
-        match form::handle_key(self, key) {
+        let outcome = form::handle_key(self, key);
+        self.after(outcome)
+    }
+
+    /// A left click at a screen position.
+    pub fn handle_click(&mut self, column: u16, line: u16) -> Effect {
+        let outcome = form::click(self, column, line);
+        self.after(outcome)
+    }
+
+    pub fn scroll(&mut self, down: bool) {
+        form::scroll(self, down);
+    }
+
+    /// Highlights the picker option under the pointer; true when it changed.
+    pub fn hover(&mut self, column: u16, line: u16) -> bool {
+        form::hover(self, column, line)
+    }
+
+    pub fn contains(&mut self, column: u16, line: u16) -> bool {
+        form::contains(self, column, line)
+    }
+
+    /// Enter on a text field or a button press, from a key or a click.
+    fn after(&mut self, outcome: FormOutcome<Field>) -> Effect {
+        match outcome {
             FormOutcome::Activated(Field::InstallTools) => Effect::InstallTools,
             FormOutcome::Activated(Field::CheckAgain) => Effect::CheckAgain,
             FormOutcome::Activated(_) => {
@@ -744,6 +770,10 @@ impl FormModel for SettingsForm {
             )
             .hint("Selection, progress, and key hints. Set NO_COLOR to turn colors off."),
         );
+        rows.push(
+            Row::new(Field::Mouse, "Mouse", toggle("Click, scroll, and hover", draft.mouse))
+                .hint("While on, hold Shift and drag to select text. Off leaves the mouse to the terminal."),
+        );
         rows
     }
 
@@ -802,6 +832,7 @@ impl FormModel for SettingsForm {
             Field::LegacyServerConnect => {
                 self.draft.legacy_server_connect = !self.draft.legacy_server_connect
             }
+            Field::Mouse => self.draft.mouse = !self.draft.mouse,
             _ => {}
         }
         self.error = None;

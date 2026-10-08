@@ -48,6 +48,8 @@ Copy a link and paste it into the terminal, or press `n`. The form reads the lin
 | `I` | Set up, update, or cancel installing the app's own tools |
 | `s` / `?` / `q` | Settings / all keys / quit |
 
+The mouse works too: click sidebar entries, downloads, buttons, form fields, picker options, and the key hints along the bottom; double-click a download for its details; scroll with the wheel. Hold Shift while dragging to select text, or turn the mouse off under **Settings → Appearance** to leave it to the terminal.
+
 In forms, `↑` `↓` and `Tab` move between fields, `←` `→` change a choice, `Enter` opens a list or presses a button, and `→` at the end of a folder accepts the suggested completion. Settings save with `Ctrl+S`.
 
 ```text

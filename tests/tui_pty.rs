@@ -104,6 +104,24 @@ impl Session {
         );
     }
 
+    /// Screen row and column of the first occurrence of `text`.
+    fn position_of(&self, text: &str) -> Option<(u16, u16)> {
+        self.contents().lines().enumerate().find_map(|(row, line)| {
+            line.find(text)
+                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+        })
+    }
+
+    /// Clicks the middle of `text` with the left button, as a terminal
+    /// reports it in SGR mouse mode.
+    fn click(&mut self, text: &str) {
+        self.wait_for(text);
+        let (row, column) = self.position_of(text).unwrap();
+        let column = column + text.chars().count() as u16 / 2;
+        let (x, y) = (column + 1, row + 1);
+        self.send(&format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m"));
+    }
+
     fn wait_until_gone(&mut self, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
@@ -354,6 +372,118 @@ fn a_link_given_at_launch_is_read_once_the_engine_check_finishes() {
     session.wait_for("Add to queue");
     session.send("\x1b");
     session.wait_for("n new");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn works_with_the_mouse() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    assert_ne!(
+        session.screen.screen().mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None,
+        "the app asks the terminal for mouse events"
+    );
+
+    session.click("+ New download");
+    session.wait_for("Paste a video, playlist, or channel link");
+    session.send("\x1b[200~https://example.test/video\x1b[201~");
+    session.wait_for("Add to queue");
+    // A choice opens its picker, and an option is chosen by clicking it.
+    session.click("Best available");
+    session.wait_for("Enter choose");
+    session.click("Up to 720p");
+    session.wait_until_gone("Enter choose");
+    session.wait_for("Up to 720p");
+    session.snapshot("Quality picked with the mouse");
+    session.click("[ Download ]");
+    session.wait_for("Completed 1  Stopped");
+
+    // A row selects its download; the details offer buttons.
+    session.click("Fixture media");
+    session.wait_for("[ Copy link ]");
+    session.wait_for("[ Show in folder ]");
+    session.snapshot("Details with buttons");
+    session.click("[ Remove ]");
+    session.wait_for("Paste a link to start");
+
+    session.click("Settings");
+    session.wait_for("Download engine");
+    session.click("Date files by download time");
+    session.wait_for("You have unsaved changes");
+    session.click("Ctrl+S save");
+    session.wait_for("Settings saved");
+    session.click("All downloads");
+    session.wait_for("Paste a link to start");
+
+    // Key hints are buttons too.
+    session.click("? help");
+    session.wait_for("Move a waiting download up or down");
+    session.click("Move a waiting");
+    session.wait_until_gone("Move a waiting download up or down");
+
+    session.send("\x1b[200~https://example.test/cancel\x1b[201~");
+    session.click("[ Download ]");
+    session.wait_for("Active 1");
+    session.click("q quit");
+    session.wait_for("Quit yt-dlp TUI?");
+    session.click("[ Keep running ]");
+    session.wait_until_gone("Quit yt-dlp TUI?");
+    session.click("q quit");
+    session.click("[ Quit ]");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn hover_highlights_and_the_mouse_can_be_turned_off() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+
+    // Pointer movement (button 35 = motion) underlines the hint under it.
+    session.wait_for("? help");
+    let (row, column) = session.position_of("? help").unwrap();
+    session.send(&format!("\x1b[<35;{};{}M", column + 2, row + 1));
+    let underlined = |session: &Session| {
+        session
+            .screen
+            .screen()
+            .cell(row, column)
+            .is_some_and(|cell| cell.underline())
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !underlined(&session) && Instant::now() < deadline {
+        session.pump(Duration::from_millis(50));
+    }
+    assert!(underlined(&session), "the hovered hint is underlined");
+
+    // The wheel scrolls Settings down to the mouse switch.
+    session.click("Settings");
+    session.wait_for("Download engine");
+    let (row, column) = session.position_of("Download engine").unwrap();
+    for _ in 0..40 {
+        session.send(&format!("\x1b[<65;{};{}M", column + 2, row + 1));
+    }
+    session.click("Click, scroll, and hover");
+    session.send("\x13");
+    session.wait_for("Settings saved");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.screen.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        && Instant::now() < deadline
+    {
+        session.pump(Duration::from_millis(50));
+    }
+    assert_eq!(
+        session.screen.screen().mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None,
+        "turning the mouse off releases it to the terminal"
+    );
+    session.send("\x1b");
+    session.wait_for("Paste a link to start");
     session.send("q");
     wait_for_exit(&mut session);
 }

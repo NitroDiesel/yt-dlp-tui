@@ -538,7 +538,32 @@ impl NewDownload {
                 _ => {}
             }
         }
-        match form::handle_key(self, key) {
+        let outcome = form::handle_key(self, key);
+        self.after(outcome)
+    }
+
+    /// A left click at a screen position.
+    pub fn handle_click(&mut self, column: u16, line: u16) -> Effect {
+        let outcome = form::click(self, column, line);
+        self.after(outcome)
+    }
+
+    pub fn scroll(&mut self, down: bool) {
+        form::scroll(self, down);
+    }
+
+    /// Highlights the picker option under the pointer; true when it changed.
+    pub fn hover(&mut self, column: u16, line: u16) -> bool {
+        form::hover(self, column, line)
+    }
+
+    pub fn contains(&mut self, column: u16, line: u16) -> bool {
+        form::contains(self, column, line)
+    }
+
+    /// Enter on a text field or a button press, from a key or a click.
+    fn after(&mut self, outcome: FormOutcome<Field>) -> Effect {
+        match outcome {
             FormOutcome::Activated(Field::Link | Field::Analyze) => self.analyze(),
             FormOutcome::Activated(Field::Queue) => self.primary(false),
             FormOutcome::Activated(Field::Download) => self.primary(true),

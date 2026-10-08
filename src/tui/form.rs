@@ -221,6 +221,19 @@ pub struct FormState<Id> {
     focus_index: usize,
     scroll: usize,
     popup: Option<Popup<Id>>,
+    /// Where the last frame drew each row, for mouse clicks.
+    geometry: Option<Geometry<Id>>,
+}
+
+#[derive(Debug, Clone)]
+struct Geometry<Id> {
+    area: Rect,
+    /// Screen line to the row drawn on it; a row's first line comes first.
+    lines: Vec<(u16, Id)>,
+    value_x: u16,
+    value_width: usize,
+    /// The open picker's area and the screen line of each option.
+    popup: Option<(Rect, Vec<(u16, usize)>)>,
 }
 
 impl<Id> Default for FormState<Id> {
@@ -230,6 +243,7 @@ impl<Id> Default for FormState<Id> {
             focus_index: 0,
             scroll: 0,
             popup: None,
+            geometry: None,
         }
     }
 }
@@ -508,6 +522,126 @@ fn handle_popup_key<M: FormModel>(
     }
 }
 
+/// A left click at a screen position. Clicking a row focuses it; on the
+/// row's first line a choice or list opens its picker, a toggle flips, a
+/// button is pressed, and a text field moves its cursor to the click.
+pub fn click<M: FormModel>(model: &mut M, column: u16, line: u16) -> FormOutcome<M::Id> {
+    let rows = model.rows();
+    model.form().settle(&rows);
+    let Some(geometry) = model.form().geometry.clone() else {
+        return FormOutcome::Ignored;
+    };
+    let point = Position::new(column, line);
+    if let Some(popup) = model.form().popup.clone() {
+        match &geometry.popup {
+            Some((area, options)) if area.contains(point) => {
+                if let Some((_, option)) = options.iter().find(|(y, _)| *y == line) {
+                    let (popup, key) = match popup {
+                        Popup::Single { id, .. } => (
+                            Popup::Single {
+                                id,
+                                cursor: *option,
+                            },
+                            KeyCode::Enter,
+                        ),
+                        Popup::Multi { id, .. } => (
+                            Popup::Multi {
+                                id,
+                                cursor: *option,
+                            },
+                            KeyCode::Char(' '),
+                        ),
+                    };
+                    model.form().popup = Some(popup.clone());
+                    handle_popup_key(model, &rows, popup, KeyEvent::new(key, KeyModifiers::NONE));
+                }
+            }
+            _ => model.form().popup = None,
+        }
+        return FormOutcome::Handled;
+    }
+    if !geometry.area.contains(point) {
+        return FormOutcome::Ignored;
+    }
+    let Some(&(_, id)) = geometry.lines.iter().find(|(y, _)| *y == line) else {
+        return FormOutcome::Handled;
+    };
+    let first_line = geometry
+        .lines
+        .iter()
+        .find(|(_, owner)| *owner == id)
+        .map(|(y, _)| *y);
+    model.form().focus = Some(id);
+    let Some(row) = rows.iter().find(|row| row.id == Some(id)) else {
+        return FormOutcome::Handled;
+    };
+    if row.disabled || first_line != Some(line) {
+        return FormOutcome::Handled;
+    }
+    match &row.control {
+        Control::Choice { selected, .. } => {
+            model.form().popup = Some(Popup::Single {
+                id,
+                cursor: *selected,
+            });
+        }
+        Control::Multi { .. } => model.form().popup = Some(Popup::Multi { id, cursor: 0 }),
+        Control::Toggle { .. } => model.toggle(id),
+        Control::Button { .. } => return FormOutcome::Activated(id),
+        Control::Text { .. } if column >= geometry.value_x => {
+            let width = geometry.value_width.saturating_sub(1);
+            if let Some(input) = model.input(id) {
+                input.click(width, (column - geometry.value_x) as usize);
+            }
+        }
+        _ => {}
+    }
+    FormOutcome::Handled
+}
+
+/// The mouse wheel: moves through the open picker, or between rows.
+pub fn scroll<M: FormModel>(model: &mut M, down: bool) {
+    let key = if down { KeyCode::Down } else { KeyCode::Up };
+    handle_key(model, KeyEvent::new(key, KeyModifiers::NONE));
+}
+
+/// Pointer movement: highlights the picker option under it. Returns true
+/// when the highlight changed.
+pub fn hover<M: FormModel>(model: &mut M, column: u16, line: u16) -> bool {
+    let state = model.form();
+    let (Some(popup), Some(geometry)) = (state.popup.clone(), state.geometry.as_ref()) else {
+        return false;
+    };
+    let Some((area, options)) = &geometry.popup else {
+        return false;
+    };
+    if !area.contains(Position::new(column, line)) {
+        return false;
+    }
+    let Some(&(_, option)) = options.iter().find(|(y, _)| *y == line) else {
+        return false;
+    };
+    let moved = match popup {
+        Popup::Single { id, cursor } if cursor != option => Popup::Single { id, cursor: option },
+        Popup::Multi { id, cursor } if cursor != option => Popup::Multi { id, cursor: option },
+        _ => return false,
+    };
+    state.popup = Some(moved);
+    true
+}
+
+/// Whether a screen position falls on this form or its open picker.
+pub fn contains<M: FormModel>(model: &mut M, column: u16, line: u16) -> bool {
+    let point = Position::new(column, line);
+    model.form().geometry.as_ref().is_some_and(|geometry| {
+        geometry.area.contains(point)
+            || geometry
+                .popup
+                .as_ref()
+                .is_some_and(|(area, _)| area.contains(point))
+    })
+}
+
 fn label_width(area: Rect) -> u16 {
     if area.width < 60 { 14 } else { LABEL_WIDTH }
 }
@@ -526,6 +660,8 @@ pub fn render<M: FormModel>(
     let label_column = label_width(area);
     let value_width = area.width.saturating_sub(label_column + 1) as usize;
     let mut lines: Vec<Line> = Vec::new();
+    // The row each line belongs to, so a click can find it.
+    let mut owners: Vec<Option<M::Id>> = Vec::new();
     let mut focus_span = (0, 0);
     let mut cursor: Option<(usize, u16)> = None;
     for (index, row) in rows.iter().enumerate() {
@@ -535,6 +671,7 @@ pub fn render<M: FormModel>(
                 lines.push(Line::default());
             }
             lines.push(Line::from(Span::styled(row.label.clone(), theme.strong())));
+            owners.resize(lines.len(), None);
             continue;
         }
         let start = lines.len();
@@ -587,6 +724,7 @@ pub fn render<M: FormModel>(
                 ]));
             }
         }
+        owners.resize(lines.len(), row.id);
         if focused {
             focus_span = (start, lines.len());
             state.focus_index = index;
@@ -600,6 +738,20 @@ pub fn render<M: FormModel>(
         state.scroll = focus_span.0;
     }
     state.scroll = state.scroll.min(lines.len().saturating_sub(height));
+    let drawn = owners
+        .iter()
+        .enumerate()
+        .skip(state.scroll)
+        .take(height)
+        .filter_map(|(index, owner)| owner.map(|id| (area.y + (index - state.scroll) as u16, id)))
+        .collect();
+    let mut geometry = Geometry {
+        area,
+        lines: drawn,
+        value_x: area.x + label_column + 1,
+        value_width,
+        popup: None,
+    };
     let visible = lines
         .into_iter()
         .skip(state.scroll)
@@ -617,8 +769,9 @@ pub fn render<M: FormModel>(
         ));
     }
     if let Some(popup) = state.popup.clone() {
-        render_popup(frame, area, &rows, popup, theme);
+        geometry.popup = render_popup(frame, area, &rows, popup, theme);
     }
+    state.geometry = Some(geometry);
 }
 
 fn render_control(
@@ -736,21 +889,21 @@ fn render_control(
     }
 }
 
+/// Draws the open picker and returns its area and each option's line.
 fn render_popup<Id: Copy + PartialEq>(
     frame: &mut Frame,
     area: Rect,
     rows: &[Row<Id>],
     popup: Popup<Id>,
     theme: &Theme,
-) {
+) -> Option<(Rect, Vec<(u16, usize)>)> {
     let (id, cursor) = match popup {
         Popup::Single { id, cursor } | Popup::Multi { id, cursor } => (id, cursor),
     };
-    let Some(row) = rows.iter().find(|row| row.id == Some(id)) else {
-        return;
-    };
-    // Each entry: (group heading or option label, style, is cursor).
+    let row = rows.iter().find(|row| row.id == Some(id))?;
     let mut entries: Vec<Line> = Vec::new();
+    // The option each entry shows; group headings show none.
+    let mut options_at: Vec<Option<usize>> = Vec::new();
     let mut cursor_line = 0;
     let mut hint = "↑↓ move · Enter choose · Esc close";
     match &row.control {
@@ -763,6 +916,7 @@ fn render_popup<Id: Copy + PartialEq>(
                         option.group.clone().unwrap_or_default(),
                         theme.faint().add_modifier(ratatui::style::Modifier::BOLD),
                     )));
+                    options_at.push(None);
                 }
                 let marker = if index == *selected { "● " } else { "  " };
                 let style = if option.disabled {
@@ -779,6 +933,7 @@ fn render_popup<Id: Copy + PartialEq>(
                     cursor_line = entries.len();
                 }
                 entries.push(line);
+                options_at.push(Some(index));
             }
         }
         Control::Multi { items, .. } => {
@@ -799,9 +954,10 @@ fn render_popup<Id: Copy + PartialEq>(
                     cursor_line = entries.len();
                 }
                 entries.push(line);
+                options_at.push(Some(index));
             }
         }
-        _ => return,
+        _ => return None,
     }
     let longest = entries
         .iter()
@@ -819,6 +975,15 @@ fn render_popup<Id: Copy + PartialEq>(
     };
     let inner_height = height.saturating_sub(3) as usize;
     let scroll = cursor_line.saturating_sub(inner_height.saturating_sub(1));
+    let option_lines = options_at
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(inner_height)
+        .filter_map(|(entry, option)| {
+            option.map(|option| (popup_area.y + 1 + (entry - scroll) as u16, option))
+        })
+        .collect();
     let mut lines = entries
         .into_iter()
         .skip(scroll)
@@ -838,6 +1003,7 @@ fn render_popup<Id: Copy + PartialEq>(
         ),
         popup_area,
     );
+    Some((popup_area, option_lines))
 }
 
 /// Greedy word wrap; words longer than a line, such as paths, are split.

@@ -35,6 +35,8 @@ The event loop draws, then waits on whichever arrives first: terminal input (rea
 
 The app never needs a yt-dlp installed by the user. The startup tool check runs in the background, so New download knows three engine states: checking, ready, and missing. A link that arrives before the engine is ready (pasted early, or given on the command line) waits and is read once the check or setup finishes. The first time the check finds no engine, and no custom executable is configured, the app offers to set up its pinned tools by itself; pressing Enter on a link while the engine is missing offers it again.
 
+Mouse support follows the same model as the keyboard. While drawing, views record clickable areas, each tagged with a layer (base screen, key hint bar, dialog, confirmation); a click is matched only against the topmost open layer, so nothing under a dialog reacts. Most clicks replay the key that does the same thing, so mouse and keyboard can't drift apart. Forms keep their own geometry (row lines and picker options) and handle clicks, the wheel, and hover through the same model methods as keys. Pointer movement redraws only when the highlight changes. Capture follows the `mouse` setting and is released on exit and on panic.
+
 Forms rebuild their rows from state on every frame, so controls appear exactly when their options apply, and focus is tracked by a stable field id rather than a row index. Service events and background results travel on separate channels, so a result that describes an older state of a job (such as the one returned by enqueue) never overwrites a newer event.
 
 ## Process lifecycle

@@ -118,13 +118,8 @@ impl TextInput {
     /// cursor in view, and the cursor's column within that slice.
     pub fn window(&self, width: usize) -> (String, usize) {
         let characters = self.value.chars().collect::<Vec<_>>();
-        let width_of =
-            |range: &[char]| -> usize { range.iter().map(|c| c.width().unwrap_or(0)).sum() };
         let width = width.max(1);
-        let mut start = 0;
-        while start < self.cursor && width_of(&characters[start..self.cursor]) >= width {
-            start += 1;
-        }
+        let start = self.window_start(&characters, width);
         let mut visible = String::new();
         let mut used = 0;
         for character in &characters[start..] {
@@ -135,7 +130,33 @@ impl TextInput {
             used += character_width;
             visible.push(*character);
         }
-        (visible, width_of(&characters[start..self.cursor]))
+        (visible, columns(&characters[start..self.cursor]))
+    }
+
+    /// Moves the cursor to `column` of the slice `window(width)` shows.
+    pub fn click(&mut self, width: usize, column: usize) {
+        let characters = self.value.chars().collect::<Vec<_>>();
+        let mut index = self.window_start(&characters, width.max(1));
+        let mut used = 0;
+        while let Some(character) = characters.get(index) {
+            let character_width = character.width().unwrap_or(0);
+            // A click on the right half of a character lands after it.
+            if used + character_width.div_ceil(2) > column {
+                break;
+            }
+            used += character_width;
+            index += 1;
+        }
+        self.cursor = index;
+    }
+
+    /// The first visible character when the cursor must fit in `width`.
+    fn window_start(&self, characters: &[char], width: usize) -> usize {
+        let mut start = 0;
+        while start < self.cursor && columns(&characters[start..self.cursor]) >= width {
+            start += 1;
+        }
+        start
     }
 
     fn len(&self) -> usize {
@@ -181,6 +202,10 @@ impl TextInput {
     }
 }
 
+fn columns(characters: &[char]) -> usize {
+    characters.iter().map(|c| c.width().unwrap_or(0)).sum()
+}
+
 fn is_word(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
@@ -222,6 +247,24 @@ mod tests {
         assert_eq!(input.value(), "one two");
         input.handle_key(control('u'));
         assert_eq!(input.value(), "");
+    }
+
+    #[test]
+    fn a_click_places_the_cursor_under_the_pointer() {
+        let mut input = TextInput::new("abcdef");
+        input.click(20, 2);
+        assert_eq!(input.cursor, 2);
+        input.click(20, 50);
+        assert!(input.cursor_at_end());
+        let mut wide = TextInput::new("日本語");
+        wide.click(20, 3);
+        assert_eq!(wide.cursor, 2, "the right half of 本 lands after it");
+
+        let mut scrolled = TextInput::new("abcdefghij");
+        let (visible, _) = scrolled.window(4);
+        assert_eq!(visible, "hij");
+        scrolled.click(4, 1);
+        assert_eq!(scrolled.cursor, 8, "columns count from the visible start");
     }
 
     #[test]

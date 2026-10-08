@@ -12,11 +12,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Position;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
     format::{DownloadFilter, link_from_text, merge_downloads},
+    mouse::{Click, Hits, Layer},
     new_download::{self, Engine, NewDownload},
     settings::{self, InstallStatus, SettingsForm, tool_ready},
     theme::Theme,
@@ -134,7 +138,16 @@ pub struct App {
     pub tools_dir: PathBuf,
     /// Width of the area beside the sidebar at the last draw.
     pub main_width: u16,
+    /// Clickable areas from the last draw.
+    pub hits: Hits,
+    /// The clickable item under the pointer, drawn underlined.
+    pub hovered: Option<Click>,
+    /// The last clicked download and when, to recognise a double-click.
+    last_click: Option<(String, Instant)>,
 }
+
+/// Two clicks on the same download within this time are a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 impl App {
     pub fn new(
@@ -169,6 +182,9 @@ impl App {
             setup_offered: false,
             tools_dir,
             main_width: 0,
+            hits: Hits::default(),
+            hovered: None,
+            last_click: None,
         };
         app.settle_selection();
         app
@@ -504,12 +520,178 @@ impl App {
         self.spawn(async move { Message::Hardware(service.hardware_acceleration(force).await) });
     }
 
-    pub fn handle_event(&mut self, event: Event) {
+    /// Applies terminal input. Returns false when nothing visible changed,
+    /// such as pointer movement that changes no highlight.
+    pub fn handle_event(&mut self, event: Event) -> bool {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Event::Paste(text) => self.handle_paste(&text),
-            _ => {}
+            Event::Mouse(mouse) => return self.handle_mouse(mouse),
+            Event::Resize(..) => {}
+            _ => return false,
         }
+        true
+    }
+
+    /// Layers that take clicks right now: only the topmost dialog, plus the
+    /// key hints under a form.
+    pub fn open_layers(&self) -> &'static [Layer] {
+        if self.confirm.is_some() {
+            &[Layer::Confirm]
+        } else if self.modal.is_some() {
+            &[Layer::Modal, Layer::Bar]
+        } else {
+            &[Layer::Base, Layer::Bar]
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let (column, line) = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.click(column, line),
+            MouseEventKind::ScrollDown => self.scroll(column, line, true),
+            MouseEventKind::ScrollUp => self.scroll(column, line, false),
+            MouseEventKind::Moved => return self.hover(column, line),
+            _ => return false,
+        }
+        true
+    }
+
+    fn click(&mut self, column: u16, line: u16) {
+        if self.confirm.is_none() && matches!(self.modal, Some(Modal::Help)) {
+            self.modal = None;
+            return;
+        }
+        let hit = self
+            .hits
+            .at(column, line, self.open_layers())
+            .map(|hit| hit.click.clone());
+        if let Some(click) = hit {
+            self.run_click(click);
+            return;
+        }
+        if self.confirm.is_some() {
+            return;
+        }
+        if let Some(Modal::NewDownload(form)) = self.modal.as_mut() {
+            let effect = form.handle_click(column, line);
+            self.run_new_download_effect(effect);
+        } else if self.screen == Screen::Settings
+            && let Some(form) = self.settings_form.as_mut()
+        {
+            let effect = form.handle_click(column, line);
+            self.run_settings_effect(effect);
+        }
+    }
+
+    fn run_click(&mut self, click: Click) {
+        match click {
+            Click::Key(key) => self.handle_key(key),
+            Click::NewDownload => self.open_new_download(None),
+            Click::Settings => {
+                if self.screen != Screen::Settings {
+                    self.open_settings();
+                }
+            }
+            Click::Filter(filter) => self.show_downloads(filter),
+            Click::Job(id) => self.click_job(id),
+            Click::Confirm(confirmed) => {
+                if let Some(confirm) = self.confirm.take()
+                    && confirmed
+                {
+                    self.run_confirmed(confirm.action);
+                }
+            }
+        }
+    }
+
+    /// Selects a download; a double-click, or any click when details fit
+    /// beside the list, also shows its details.
+    fn click_job(&mut self, id: String) {
+        let now = Instant::now();
+        let double = self
+            .last_click
+            .as_ref()
+            .is_some_and(|(last, at)| *last == id && now.duration_since(*at) < DOUBLE_CLICK);
+        self.last_click = (!double).then(|| (id.clone(), now));
+        if self.selected.as_ref() != Some(&id) {
+            self.selected = Some(id);
+            self.details_scroll = 0;
+        }
+        if double || self.main_width >= super::view::SIDE_BY_SIDE {
+            self.details = true;
+        }
+    }
+
+    /// The sidebar filters also leave Settings, asking first if it has changes.
+    fn show_downloads(&mut self, filter: DownloadFilter) {
+        if self.screen == Screen::Settings {
+            if self
+                .settings_form
+                .as_ref()
+                .is_some_and(SettingsForm::is_dirty)
+            {
+                self.run_settings_effect(settings::Effect::Leave);
+                return;
+            }
+            self.settings_form = None;
+            self.screen = Screen::Downloads;
+        }
+        self.set_filter(filter);
+    }
+
+    fn scroll(&mut self, column: u16, line: u16, down: bool) {
+        if self.confirm.is_some() {
+            return;
+        }
+        match self.modal.as_mut() {
+            Some(Modal::NewDownload(form)) => return form.scroll(down),
+            Some(Modal::Help) => return,
+            None => {}
+        }
+        if self.screen == Screen::Settings {
+            if let Some(form) = self.settings_form.as_mut() {
+                form.scroll(down);
+            }
+            return;
+        }
+        let point = Position::new(column, line);
+        if self.hits.details.is_some_and(|area| area.contains(point)) {
+            self.details_scroll = if down {
+                self.details_scroll.saturating_sub(3)
+            } else {
+                self.details_scroll.saturating_add(3)
+            };
+        } else {
+            self.select_offset(if down { 1 } else { -1 });
+        }
+    }
+
+    /// Tracks the item under the pointer. Returns true when a highlight moved.
+    fn hover(&mut self, column: u16, line: u16) -> bool {
+        let mut changed = false;
+        if self.confirm.is_none() {
+            match self.modal.as_mut() {
+                Some(Modal::NewDownload(form)) => changed |= form.hover(column, line),
+                Some(Modal::Help) => {}
+                None if self.screen == Screen::Settings => {
+                    if let Some(form) = self.settings_form.as_mut() {
+                        changed |= form.hover(column, line);
+                    }
+                }
+                None => {}
+            }
+        }
+        let hovered = self
+            .hits
+            .at(column, line, self.open_layers())
+            .filter(|hit| hit.hover)
+            .map(|hit| hit.click.clone());
+        if hovered != self.hovered {
+            self.hovered = hovered;
+            changed = true;
+        }
+        changed
     }
 
     fn handle_paste(&mut self, text: &str) {
@@ -802,7 +984,15 @@ impl App {
             self.screen = Screen::Downloads;
             return;
         };
-        match form.handle_key(key) {
+        let effect = form.handle_key(key);
+        self.run_settings_effect(effect);
+    }
+
+    fn run_settings_effect(&mut self, effect: settings::Effect) {
+        let Some(form) = self.settings_form.as_mut() else {
+            return;
+        };
+        match effect {
             settings::Effect::None => {}
             settings::Effect::Leave => {
                 if form.is_dirty() {

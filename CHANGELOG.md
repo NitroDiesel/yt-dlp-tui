@@ -2,6 +2,10 @@
 
 Each release's section here becomes its GitHub release notes.
 
+## Unreleased
+
+- Mouse support: click the sidebar, downloads, buttons, form fields, picker options, confirmation buttons, and the key hints along the bottom; double-click a download for its details; scroll lists, details, forms, and pickers with the wheel; clickable items underline on hover. The download details panel gains buttons for its actions. Hold Shift while dragging to select text, or turn the mouse off under Settings → Appearance.
+
 ## v0.1.0
 
 The first release of yt-dlp TUI, the terminal counterpart of [yt-dlp Desktop](https://github.com/NitroDiesel/yt-dlp-desktop).

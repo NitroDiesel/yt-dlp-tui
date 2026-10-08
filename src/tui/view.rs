@@ -5,7 +5,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -19,6 +19,7 @@ use super::{
         format_timestamp, format_when, hostname, job_meta, job_title, merge_downloads, percent_of,
         status_label, truncate,
     },
+    mouse::{Click, Hits, Layer, span_area},
     new_download::Engine,
     theme::Theme,
 };
@@ -32,6 +33,7 @@ const SIDEBAR_WIDTH: u16 = 26;
 pub const SIDE_BY_SIDE: u16 = 90;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let mut hits = Hits::default();
     let area = frame.area();
     let [body, status, hints] = Layout::vertical([
         Constraint::Min(1),
@@ -47,7 +49,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Min(1),
         ])
         .areas(body);
-        render_sidebar(frame, sidebar, app);
+        render_sidebar(frame, sidebar, app, &mut hits);
         render_rule(frame, rule, &app.theme);
         main
     } else {
@@ -55,21 +57,41 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     app.main_width = main.width;
     match app.screen {
-        Screen::Downloads => render_downloads(frame, main, app),
-        Screen::Settings => render_settings(frame, main, app),
+        Screen::Downloads => render_downloads(frame, main, app, &mut hits),
+        Screen::Settings => render_settings(frame, main, app, &mut hits),
     }
-    render_status(frame, status, app);
-    render_hints(frame, hints, app);
+    render_status(frame, status, app, &mut hits);
+    render_hints(frame, hints, app, &mut hits);
     match app.modal.as_mut() {
         Some(Modal::NewDownload(form)) => {
             let theme = app.theme;
-            render_new_download(frame, body, form, &theme)
+            render_new_download(frame, body, form, &theme, &mut hits)
         }
         Some(Modal::Help) => render_help(frame, body, &app.theme),
         None => {}
     }
     if app.confirm.is_some() {
-        render_confirm(frame, body, app);
+        render_confirm(frame, body, app, &mut hits);
+    }
+    highlight_hover(frame, app, &hits);
+    app.hits = hits;
+}
+
+/// Underlines the clickable item under the pointer.
+fn highlight_hover(frame: &mut Frame, app: &App, hits: &Hits) {
+    let Some(hovered) = &app.hovered else {
+        return;
+    };
+    let layers = app.open_layers();
+    for hit in hits
+        .items
+        .iter()
+        .filter(|hit| hit.hover && layers.contains(&hit.layer) && &hit.click == hovered)
+    {
+        frame.buffer_mut().set_style(
+            hit.area,
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        );
     }
 }
 
@@ -80,7 +102,7 @@ fn render_rule(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
+fn render_sidebar(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let theme = &app.theme;
     let width = area.width as usize;
     let all = merge_downloads(&app.queue, &app.history);
@@ -136,9 +158,30 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         app.screen == Screen::Settings,
     ));
     frame.render_widget(Paragraph::new(lines), area);
+    // The whole row clicks; the label underlines on hover.
+    let mut clickable = |index: usize, label: &str, click: Click| {
+        let y = area.y + index as u16;
+        if y < area.bottom() {
+            hits.push_plain(
+                Rect::new(area.x, y, area.width, 1),
+                click.clone(),
+                Layer::Base,
+            );
+            hits.push(
+                span_area(area.x + 1, y, label.width() as u16, area),
+                click,
+                Layer::Base,
+            );
+        }
+    };
+    clickable(2, "+ New download", Click::NewDownload);
+    for (index, filter) in DownloadFilter::ALL.iter().enumerate() {
+        clickable(4 + index, filter.label(), Click::Filter(*filter));
+    }
+    clickable(9, "Settings", Click::Settings);
 }
 
-fn render_downloads(frame: &mut Frame, area: Rect, app: &App) {
+fn render_downloads(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let wide = area.width >= SIDE_BY_SIDE;
     let selected = app.selected_job();
     let (list_area, details_area) = match (app.details, selected) {
@@ -157,10 +200,12 @@ fn render_downloads(frame: &mut Frame, area: Rect, app: &App) {
         _ => (Some(area), None),
     };
     if let Some(list) = list_area {
-        render_list(frame, list, app);
+        hits.list = Some(list);
+        render_list(frame, list, app, hits);
     }
     if let (Some(details), Some(job)) = (details_area, selected) {
-        render_details(frame, inset(details, 1), job, app);
+        hits.details = Some(details);
+        render_details(frame, inset(details, 1), job, app, hits);
     }
 }
 
@@ -228,7 +273,7 @@ const COLUMNS: [(&str, u16); 5] = [
     ("ETA", 8),
 ];
 
-fn render_list(frame: &mut Frame, area: Rect, app: &App) {
+fn render_list(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let theme = &app.theme;
     let area = inset(area, 1);
     let jobs = app.visible_jobs();
@@ -321,6 +366,15 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App) {
     let first = selected_index.saturating_sub(per_page.saturating_sub(1));
     for job in jobs.iter().skip(first).take(per_page) {
         let is_selected = app.selected.as_ref() == Some(&job.id);
+        let y = area.y + lines.len() as u16;
+        if y < area.bottom() {
+            let height = (area.bottom() - y).min(2);
+            hits.push_plain(
+                Rect::new(area.x, y, area.width, height),
+                Click::Job(job.id.clone()),
+                Layer::Base,
+            );
+        }
         let (top, bottom) = job_lines(job, name_width, &columns, theme);
         if is_selected {
             lines.push(top.style(theme.selected()));
@@ -479,9 +533,15 @@ fn job_lines(
     (Line::from(top), Line::from(bottom))
 }
 
-fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App) {
+fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App, hits: &mut Hits) {
     let theme = &app.theme;
     let width = area.width as usize;
+    let status_width = status_label(job.status).width() as u16;
+    hits.push(
+        span_area(area.x + status_width + 3, area.y, 10, area),
+        Click::key(crossterm::event::KeyCode::Esc),
+        Layer::Base,
+    );
     let mut lines = vec![Line::from(vec![
         Span::styled(
             status_label(job.status),
@@ -492,10 +552,57 @@ fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App) {
     for line in form::wrap(&job_title(job), width) {
         lines.push(Line::from(Span::styled(line, theme.strong())));
     }
-    lines.push(Line::from(vec![
-        Span::styled(hostname(&job.request.url), theme.faint()),
-        Span::styled("  y copies the link", theme.faint()),
-    ]));
+    lines.push(Line::from(Span::styled(
+        hostname(&job.request.url),
+        theme.faint(),
+    )));
+    // Buttons for what the keys do, wrapped to the panel width.
+    let mut actions: Vec<(&str, char)> = Vec::new();
+    if job.status.is_running() || job.status == JobStatus::Queued {
+        actions.push(("Cancel", 'c'));
+    }
+    if job.status == JobStatus::Queued {
+        actions.extend([("Move up", 'K'), ("Move down", 'J')]);
+    }
+    if job.status.is_stopped() {
+        actions.push(("Retry", 'r'));
+    }
+    if job.status == JobStatus::Completed {
+        actions.extend([("Open file", 'o'), ("Show in folder", 'f')]);
+    }
+    actions.push(("Copy link", 'y'));
+    if !job.status.is_running() {
+        actions.push(("Remove", 'd'));
+    }
+    let mut row: Vec<Span> = Vec::new();
+    let mut used = 0;
+    for (label, key) in actions {
+        let text = format!("[ {label} ]");
+        let button_width = text.width();
+        if used > 0 && used + 1 + button_width > width {
+            lines.push(Line::from(std::mem::take(&mut row)));
+            used = 0;
+        }
+        if used > 0 {
+            row.push(Span::raw(" "));
+            used += 1;
+        }
+        hits.push(
+            span_area(
+                area.x + used as u16,
+                area.y + lines.len() as u16,
+                button_width as u16,
+                area,
+            ),
+            Click::char(key),
+            Layer::Base,
+        );
+        row.push(Span::styled(text, theme.accent()));
+        used += button_width;
+    }
+    if !row.is_empty() {
+        lines.push(Line::from(row));
+    }
     lines.push(Line::default());
 
     let progress = &job.progress;
@@ -655,7 +762,7 @@ fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_settings(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_settings(frame: &mut Frame, area: Rect, app: &mut App, hits: &mut Hits) {
     let theme = app.theme;
     let Some(form) = app.settings_form.as_mut() else {
         return;
@@ -689,6 +796,17 @@ fn render_settings(frame: &mut Frame, area: Rect, app: &mut App) {
                 theme.error(),
             ))
         } else {
+            let y = footer.y + 1;
+            hits.push(
+                span_area(footer.x + 27, y, 11, footer),
+                Click::ctrl('s'),
+                Layer::Base,
+            );
+            hits.push(
+                span_area(footer.x + 40, y, 11, footer),
+                Click::key(crossterm::event::KeyCode::Esc),
+                Layer::Base,
+            );
             Line::from(vec![
                 Span::styled("You have unsaved changes.  ", theme.warning()),
                 Span::styled("Ctrl+S", theme.key()),
@@ -704,7 +822,7 @@ fn render_settings(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_status(frame: &mut Frame, area: Rect, app: &App) {
+fn render_status(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let theme = &app.theme;
     let (mut speed, mut active, mut waiting) = (0.0, 0, 0);
     for job in &app.queue {
@@ -744,6 +862,22 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("● ", dot),
         Span::styled(format!("{label} "), theme.faint()),
     ];
+    let right_width = Line::from(right.clone()).width() as u16;
+    let engine_click = if app.engine() == Engine::Missing && app.install.is_none() {
+        Click::char('I')
+    } else {
+        Click::Settings
+    };
+    hits.push(
+        span_area(
+            area.right().saturating_sub(right_width),
+            area.y,
+            right_width,
+            area,
+        ),
+        engine_click,
+        Layer::Base,
+    );
     let used = Line::from(left.clone()).width() + Line::from(right.clone()).width();
     left.push(Span::raw(
         " ".repeat((area.width as usize).saturating_sub(used)),
@@ -757,7 +891,7 @@ fn tool_ok(app: &App, kind: DependencyKind) -> bool {
 }
 
 /// Key hints for the current context; a notice replaces them briefly.
-fn render_hints(frame: &mut Frame, area: Rect, app: &App) {
+fn render_hints(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let theme = &app.theme;
     if let Some(toast) = &app.toast {
         let style = if toast.error {
@@ -834,6 +968,14 @@ fn render_hints(frame: &mut Frame, area: Rect, app: &App) {
         if used + width > area.width as usize {
             break;
         }
+        if let Some(click) = Click::for_hint(key) {
+            let label_width = (key.width() + 1 + label.width()) as u16;
+            hits.push(
+                span_area(area.x + used as u16, area.y, label_width, area),
+                click,
+                Layer::Bar,
+            );
+        }
         used += width;
         spans.push(Span::styled(key, theme.key()));
         spans.push(Span::styled(format!(" {label}  "), theme.faint()));
@@ -864,6 +1006,7 @@ fn render_new_download(
     area: Rect,
     form: &mut super::new_download::NewDownload,
     theme: &Theme,
+    hits: &mut Hits,
 ) {
     let width = area.width.saturating_sub(4).min(104);
     let height = area.height.saturating_sub(2).max(10);
@@ -873,6 +1016,16 @@ fn render_new_download(
         .title_bottom(Line::from(Span::styled(" Esc closes ", theme.faint())).right_aligned());
     let inner = block.inner(outer);
     frame.render_widget(block, outer);
+    hits.push(
+        span_area(
+            outer.right().saturating_sub(13),
+            outer.bottom() - 1,
+            12,
+            outer,
+        ),
+        Click::key(crossterm::event::KeyCode::Esc),
+        Layer::Modal,
+    );
     let inner = inset(inner, 1);
     let error = form.error.clone();
     let [body, footer] = Layout::vertical([
@@ -892,7 +1045,7 @@ fn render_new_download(
     }
 }
 
-fn render_confirm(frame: &mut Frame, area: Rect, app: &App) {
+fn render_confirm(frame: &mut Frame, area: Rect, app: &App, hits: &mut Hits) {
     let Some(confirm) = &app.confirm else {
         return;
     };
@@ -916,6 +1069,23 @@ fn render_confirm(frame: &mut Frame, area: Rect, app: &App) {
             },
         )
     };
+    let buttons_y = inner.y + message.len() as u16 + 2;
+    let confirm_width = confirm.confirm.width() as u16 + 4;
+    hits.push(
+        span_area(inner.x, buttons_y, confirm_width, inner),
+        Click::Confirm(true),
+        Layer::Confirm,
+    );
+    hits.push(
+        span_area(
+            inner.x + confirm_width + 2,
+            buttons_y,
+            confirm.cancel.width() as u16 + 4,
+            inner,
+        ),
+        Click::Confirm(false),
+        Layer::Confirm,
+    );
     let mut lines = vec![Line::default()];
     lines.extend(message.into_iter().map(Line::from));
     lines.push(Line::default());
@@ -961,6 +1131,15 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Q", "Add to the queue"),
             ("Ctrl+S", "Save settings"),
             ("Ctrl+U / Ctrl+W", "Clear field / delete a word"),
+        ],
+    ),
+    (
+        "Mouse",
+        &[
+            ("Click", "Sidebar, rows, buttons, fields, and key hints"),
+            ("Double-click", "Show a download's details"),
+            ("Wheel", "Scroll the list, details, forms, and pickers"),
+            ("Shift+drag", "Select text in the terminal"),
         ],
     ),
 ];
