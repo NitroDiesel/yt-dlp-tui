@@ -45,7 +45,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 22.04 keeps the glibc requirement at 2.35.
+          # 22.04 keeps the glibc requirement low (2.34 for v0.1.0).
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-22.04

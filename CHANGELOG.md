@@ -36,7 +36,7 @@ Up to date with yt-dlp 2026.08.19: SponsorBlock `hook`, highlight, and community
 
 Download the archive for your platform, check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui`. Accept the setup prompt on first launch.
 
-Builds are provided for Linux (x86_64 and aarch64, glibc 2.35 or newer), Windows x64, and macOS (Apple silicon and Intel). The binaries are not code-signed. On macOS, if Gatekeeper blocks a browser-downloaded binary, run `xattr -d com.apple.quarantine yt-dlp-tui`.
+Builds are provided for Linux (x86_64 and aarch64, glibc 2.34 or newer), Windows x64, and macOS (Apple silicon and Intel). The binaries are not code-signed. On macOS, if Gatekeeper blocks a browser-downloaded binary, run `xattr -d com.apple.quarantine yt-dlp-tui`.
 
 ### Known limitations
 
