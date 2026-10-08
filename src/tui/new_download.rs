@@ -197,13 +197,30 @@ pub enum Field {
     Download,
 }
 
+/// Whether the app's own copy of yt-dlp can run yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// The startup check or a setup is still running.
+    Checking,
+    Ready,
+    /// Not installed and no custom executable chosen.
+    Missing,
+}
+
 /// What the app should do after a key in this form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     None,
     Close,
-    Analyze { url: String, no_playlist: bool },
-    Submit { start_immediately: bool },
+    Analyze {
+        url: String,
+        no_playlist: bool,
+    },
+    Submit {
+        start_immediately: bool,
+    },
+    /// A link is waiting and the engine needs to be installed first.
+    SetupEngine,
 }
 
 pub struct NewDownload {
@@ -237,7 +254,9 @@ pub struct NewDownload {
     user_agent: TextInput,
     pub submitting: bool,
     pub error: Option<String>,
-    pub yt_dlp_ready: bool,
+    engine: Engine,
+    /// A link was entered before the engine could read it.
+    pending: bool,
     pub ffmpeg_ready: bool,
     pub hardware: HardwareAccelerationInfo,
     pub theme: Theme,
@@ -380,7 +399,7 @@ fn parse_date(input: &TextInput, label: &str) -> Result<Option<String>, String> 
 impl NewDownload {
     pub fn new(
         settings: &AppSettings,
-        yt_dlp_ready: bool,
+        engine: Engine,
         ffmpeg_ready: bool,
         hardware: HardwareAccelerationInfo,
         theme: Theme,
@@ -428,7 +447,8 @@ impl NewDownload {
             user_agent: TextInput::default(),
             submitting: false,
             error: None,
-            yt_dlp_ready,
+            engine,
+            pending: false,
             ffmpeg_ready,
             hardware,
             theme,
@@ -449,10 +469,31 @@ impl NewDownload {
         self.analyze()
     }
 
+    /// Updates the engine state and reads a waiting link once it can.
+    pub fn set_engine(&mut self, engine: Engine) -> Effect {
+        self.engine = engine;
+        if engine == Engine::Ready && self.pending {
+            self.pending = false;
+            return self.analyze();
+        }
+        Effect::None
+    }
+
     fn analyze(&mut self) -> Effect {
         let url = self.link.value().trim().to_owned();
-        if url.is_empty() || !self.yt_dlp_ready || self.analyzing {
+        if url.is_empty() || self.analyzing {
             return Effect::None;
+        }
+        match self.engine {
+            Engine::Ready => {}
+            Engine::Checking => {
+                self.pending = true;
+                return Effect::None;
+            }
+            Engine::Missing => {
+                self.pending = true;
+                return Effect::SetupEngine;
+            }
         }
         self.revision += 1;
         self.analyzing = true;
@@ -848,14 +889,21 @@ impl NewDownload {
     }
 
     fn header_rows(&self, rows: &mut Vec<Row<Field>>, theme: &Theme) {
-        if !self.yt_dlp_ready {
-            rows.push(Row::note(
-                "",
-                Line::from(Span::styled(
-                    "yt-dlp isn't installed. Press Esc, then I to install the pinned tools.",
-                    theme.warning(),
-                )),
-            ));
+        let engine_note = match (self.engine, self.pending) {
+            (Engine::Checking, true) => Some((
+                "Getting the download engine ready. The link is read as soon as it is.",
+                theme.faint(),
+            )),
+            (Engine::Missing, _) => Some((
+                "The download engine isn't set up yet. Press Enter to install the app's own copy of yt-dlp; nothing else needs to be installed.",
+                theme.warning(),
+            )),
+            _ => None,
+        };
+        if let Some((note, style)) = engine_note {
+            for line in form::wrap(note, 70) {
+                rows.push(Row::note("", Line::from(Span::styled(line, style))));
+            }
         }
         if self.analyzing {
             rows.push(Row::note(
@@ -1649,9 +1697,7 @@ impl NewDownload {
                         "Analyze"
                     }),
                 )
-                .disabled(
-                    self.link.value().trim().is_empty() || !self.yt_dlp_ready || self.analyzing,
-                ),
+                .disabled(self.link.value().trim().is_empty() || self.analyzing),
             );
         }
         rows
@@ -2013,7 +2059,7 @@ mod tests {
         };
         let mut form = NewDownload::new(
             &settings,
-            true,
+            Engine::Ready,
             true,
             HardwareAccelerationInfo::checking(),
             Theme::new("blue"),
@@ -2129,12 +2175,54 @@ mod tests {
         assert_eq!(form.subtitle_languages.value(), "en.*");
     }
 
+    fn waiting(engine: Engine) -> NewDownload {
+        NewDownload::new(
+            &AppSettings::default(),
+            engine,
+            true,
+            HardwareAccelerationInfo::checking(),
+            Theme::new("blue"),
+        )
+    }
+
+    #[test]
+    fn a_link_waits_for_the_startup_check_then_is_read() {
+        let mut form = waiting(Engine::Checking);
+        assert_eq!(form.set_link("https://example.test/video"), Effect::None);
+        assert!(!form.analyzing);
+        assert_eq!(form.set_engine(Engine::Checking), Effect::None);
+        assert!(matches!(
+            form.set_engine(Engine::Ready),
+            Effect::Analyze { .. }
+        ));
+        assert!(form.analyzing);
+        assert_eq!(
+            form.set_engine(Engine::Ready),
+            Effect::None,
+            "read only once"
+        );
+    }
+
+    #[test]
+    fn a_link_without_an_engine_asks_for_setup_and_is_read_after() {
+        let mut form = waiting(Engine::Missing);
+        assert_eq!(
+            form.set_link("https://example.test/video"),
+            Effect::SetupEngine
+        );
+        assert_eq!(form.set_engine(Engine::Checking), Effect::None);
+        assert!(matches!(
+            form.set_engine(Engine::Ready),
+            Effect::Analyze { .. }
+        ));
+    }
+
     #[test]
     fn a_video_inside_a_playlist_defaults_to_just_that_video() {
         let settings = AppSettings::default();
         let mut form = NewDownload::new(
             &settings,
-            true,
+            Engine::Ready,
             true,
             HardwareAccelerationInfo::checking(),
             Theme::new("blue"),

@@ -17,7 +17,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
     format::{DownloadFilter, link_from_text, merge_downloads},
-    new_download::{self, NewDownload},
+    new_download::{self, Engine, NewDownload},
     settings::{self, InstallStatus, SettingsForm, tool_ready},
     theme::Theme,
 };
@@ -129,6 +129,8 @@ pub struct App {
     pub install: Option<Install>,
     pub toast: Option<Toast>,
     pub should_quit: bool,
+    /// Setup is offered by itself once per session, when the engine is missing.
+    setup_offered: bool,
     pub tools_dir: PathBuf,
     /// Width of the area beside the sidebar at the last draw.
     pub main_width: u16,
@@ -164,6 +166,7 @@ impl App {
             install: None,
             toast: None,
             should_quit: false,
+            setup_offered: false,
             tools_dir,
             main_width: 0,
         };
@@ -215,6 +218,17 @@ impl App {
             .iter()
             .filter(|job| job.status.is_running())
             .count()
+    }
+
+    /// Whether downloads can run: still checking, ready, or not set up.
+    pub fn engine(&self) -> Engine {
+        if self.dependencies.is_empty() || self.install.is_some() {
+            Engine::Checking
+        } else if self.yt_dlp_ready() {
+            Engine::Ready
+        } else {
+            Engine::Missing
+        }
     }
 
     pub fn yt_dlp_ready(&self) -> bool {
@@ -362,15 +376,13 @@ impl App {
             }
             Message::Paused(paused) => self.queue_paused = paused,
             Message::Dependencies(dependencies) => {
-                if let Some(Modal::NewDownload(form)) = self.modal.as_mut() {
-                    form.yt_dlp_ready = tool_ready(&dependencies, DependencyKind::YtDlp);
-                    form.ffmpeg_ready = tool_ready(&dependencies, DependencyKind::Ffmpeg);
-                }
                 if let Some(form) = self.settings_form.as_mut() {
                     form.dependencies = dependencies.clone();
                     form.checking = false;
                 }
                 self.dependencies = dependencies;
+                self.engine_changed();
+                self.offer_setup_once();
             }
             Message::Hardware(hardware) => {
                 if let Some(Modal::NewDownload(form)) = self.modal.as_mut() {
@@ -438,6 +450,32 @@ impl App {
             Message::Notice(text) => self.notify(text, false),
             Message::Problem(text) => self.notify(text, true),
         }
+    }
+
+    /// Tells New download about the engine, which may read a waiting link.
+    fn engine_changed(&mut self) {
+        let engine = self.engine();
+        let ffmpeg_ready = tool_ready(&self.dependencies, DependencyKind::Ffmpeg);
+        if let Some(Modal::NewDownload(form)) = self.modal.as_mut() {
+            form.ffmpeg_ready = ffmpeg_ready;
+            let effect = form.set_engine(engine);
+            self.run_new_download_effect(effect);
+        }
+    }
+
+    /// The first time the engine turns out to be missing, offer to set it up,
+    /// so a fresh install works without installing yt-dlp or anything else.
+    fn offer_setup_once(&mut self) {
+        if self.setup_offered
+            || self.engine() != Engine::Missing
+            || self.settings.yt_dlp_path.is_some()
+            || installer::current_target().is_none()
+            || self.confirm.is_some()
+        {
+            return;
+        }
+        self.setup_offered = true;
+        self.confirm_install();
     }
 
     /// Re-checks tool versions; with `hardware`, also forgets the GPU result.
@@ -628,7 +666,7 @@ impl App {
         self.screen_downloads_if_clean();
         let form = NewDownload::new(
             &self.settings,
-            self.yt_dlp_ready(),
+            self.engine(),
             tool_ready(&self.dependencies, DependencyKind::Ffmpeg),
             self.hardware.clone(),
             self.theme,
@@ -681,6 +719,11 @@ impl App {
                             .map_err(|error| error.to_string()),
                     }
                 });
+            }
+            new_download::Effect::SetupEngine => {
+                if self.install.is_none() {
+                    self.confirm_install();
+                }
             }
             new_download::Effect::Submit { start_immediately } => match form.build_request() {
                 Err(error) => form.error = Some(error),
@@ -799,11 +842,18 @@ impl App {
         }
     }
 
-    fn confirm_install(&mut self) {
-        if let Some(install) = self.install.take() {
+    /// `I`: install the pinned tools, or cancel an installation in progress.
+    fn toggle_install(&mut self) {
+        if let Some(install) = &self.install {
             install.cancel.store(true, Ordering::SeqCst);
             self.notify("Cancelling the tool installation…", false);
-            self.install = Some(install);
+        } else {
+            self.confirm_install();
+        }
+    }
+
+    fn confirm_install(&mut self) {
+        if self.install.is_some() {
             return;
         }
         if installer::current_target().is_none() {
@@ -824,16 +874,29 @@ impl App {
             .map(|component| format!("{} {}", component.name, component.version))
             .collect::<Vec<_>>()
             .join(", ");
-        self.ask(
-            "Install the pinned tools?",
-            format!(
-                "Downloads {list} from their official releases into {}. Each file is checked against its pinned SHA-256 before it is used.",
-                self.tools_dir.display()
-            ),
-            "Install",
-            "Not now",
-            ConfirmAction::InstallTools,
-        );
+        let size = super::format::format_bytes(Some(installer::download_size(&components) as f64));
+        let folder = self.tools_dir.display();
+        if self.engine() == Engine::Missing {
+            self.ask(
+                "Set up the download engine?",
+                format!(
+                    "yt-dlp TUI runs its own copy of {list}, so you don't need yt-dlp, FFmpeg, Python, or Deno installed. Setup downloads {size} from their official releases into {folder} and checks every file against its pinned SHA-256."
+                ),
+                "Set up",
+                "Not now",
+                ConfirmAction::InstallTools,
+            );
+        } else {
+            self.ask(
+                "Install the pinned tools?",
+                format!(
+                    "Downloads {list} ({size}) from their official releases into {folder}. Every file is checked against its pinned size and SHA-256 before it is used."
+                ),
+                "Install",
+                "Not now",
+                ConfirmAction::InstallTools,
+            );
+        }
     }
 
     fn start_install(&mut self) {
@@ -846,6 +909,7 @@ impl App {
         if let Some(form) = self.settings_form.as_mut() {
             form.installing = true;
         }
+        self.engine_changed();
         let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -896,7 +960,7 @@ impl App {
             KeyCode::Char('n') | KeyCode::Char('a') => self.open_new_download(None),
             KeyCode::Char('s') | KeyCode::Char(',') => self.open_settings(),
             KeyCode::Char('b') => self.sidebar = !self.sidebar,
-            KeyCode::Char('I') => self.confirm_install(),
+            KeyCode::Char('I') => self.toggle_install(),
             KeyCode::Char(digit @ '1'..='4') => {
                 self.set_filter(DownloadFilter::ALL[digit as usize - '1' as usize]);
             }
@@ -1109,6 +1173,57 @@ mod tests {
             error_message: None,
             diagnostics: vec![],
         }
+    }
+
+    fn tools(yt_dlp: bool) -> Vec<DependencyInfo> {
+        [
+            DependencyKind::YtDlp,
+            DependencyKind::Ffmpeg,
+            DependencyKind::Ffprobe,
+            DependencyKind::JavascriptRuntime,
+        ]
+        .into_iter()
+        .map(|kind| DependencyInfo {
+            kind,
+            status: if yt_dlp { "available" } else { "missing" }.into(),
+            source: if yt_dlp { "managed" } else { "not_found" }.into(),
+            path: None,
+            version: None,
+            message: None,
+        })
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn offers_setup_once_when_the_engine_is_missing() {
+        let (mut app, _data) = app().await;
+        assert_eq!(app.engine(), Engine::Checking);
+        app.handle_message(Message::Dependencies(tools(false)));
+        assert_eq!(app.engine(), Engine::Missing);
+        if installer::current_target().is_none() {
+            return;
+        }
+        let confirm = app.confirm.take().expect("setup is offered by itself");
+        assert_eq!(confirm.title, "Set up the download engine?");
+        assert!(confirm.message.contains("don't need yt-dlp"));
+        assert!(matches!(confirm.action, ConfirmAction::InstallTools));
+        app.handle_message(Message::Dependencies(tools(false)));
+        assert!(app.confirm.is_none(), "offered only once");
+    }
+
+    #[tokio::test]
+    async fn a_link_given_at_launch_is_read_once_the_engine_is_ready() {
+        let (mut app, _data) = app().await;
+        app.open_new_download(Some("https://example.test/video".into()));
+        let Some(Modal::NewDownload(form)) = &app.modal else {
+            panic!("New download is open");
+        };
+        assert!(!form.analyzing, "the startup check is still running");
+        app.handle_message(Message::Dependencies(tools(true)));
+        let Some(Modal::NewDownload(form)) = &app.modal else {
+            panic!("New download is open");
+        };
+        assert!(form.analyzing, "the waiting link is read");
     }
 
     #[tokio::test]

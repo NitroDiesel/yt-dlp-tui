@@ -14,17 +14,16 @@ A keyboard-driven terminal interface for [yt-dlp](https://github.com/yt-dlp/yt-d
 - Shows every download in one list, filtered by Downloading, Completed, and Stopped, with live progress, speed, ETA, post-processing stages, errors, and diagnostics.
 - Supports pause, reorder, retry, cancel, remove, open file, and show in folder. Removing a download never deletes its file.
 - Keeps the queue, history, and settings in SQLite. Quitting stops running downloads as *interrupted*; Retry resumes from the partial file.
-- Installs pinned builds of yt-dlp 2026.08.19, Deno 2.9.7, and FFmpeg 8.1.2, each verified against a SHA-256 built into the app. Programs on `PATH` are never run automatically.
+- Needs nothing else installed: no yt-dlp, Python, FFmpeg, or Deno. On first launch it offers to set up its own copies of yt-dlp 2026.08.19, Deno 2.9.7, and FFmpeg 8.1.2 (about 200 MB, depending on the platform), each checked against a size and SHA-256 built into the app. A yt-dlp or FFmpeg already on your system is never used unless you choose it in Settings.
 
 ## Install
 
-Download the archive for your platform from the [Releases page](https://github.com/NitroDiesel/yt-dlp-tui/releases), check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui install-tools`, then `./yt-dlp-tui`.
+Download the archive for your platform from the [Releases page](https://github.com/NitroDiesel/yt-dlp-tui/releases), check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui`. You don't need to install yt-dlp or anything else first: on first launch the app asks to set up its own download engine, and a link you started it with is read as soon as setup finishes. To set up ahead of time, for example on a server, run `./yt-dlp-tui install-tools`.
 
 To build from source instead (Rust 1.94 or newer):
 
 ```sh
 cargo install --path .
-yt-dlp-tui install-tools   # or press I inside the app
 yt-dlp-tui
 ```
 
@@ -46,7 +45,7 @@ Copy a link and paste it into the terminal, or press `n`. The form reads the lin
 | `K` / `J` | Move a waiting download up or down |
 | `p` | Pause or resume the queue |
 | `C` | Clear completed downloads from the list |
-| `I` | Install or update the pinned tools |
+| `I` | Set up, update, or cancel installing the app's own tools |
 | `s` / `?` / `q` | Settings / all keys / quit |
 
 In forms, `↑` `↓` and `Tab` move between fields, `←` `→` change a choice, `Enter` opens a list or presses a button, and `→` at the end of a folder accepts the suggested completion. Settings save with `Ctrl+S`.
@@ -68,12 +67,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 ```
 
-`cargo test` includes end-to-end tests that drive the real binary in a pseudo-terminal against a fake engine (`src/bin/fake-ytdlp.rs`) and read the screen through a terminal emulator. Two more tests download a short public video with the real pinned tools; they need the network and run on request:
+`cargo test` includes end-to-end tests that drive the real binary in a pseudo-terminal against a fake engine (`src/bin/fake-ytdlp.rs`) and read the screen through a terminal emulator. They also check that a yt-dlp on `PATH` is ignored. Three more tests use the network and run on request: one starts from an empty tools folder, lets the app set up its own engine, and downloads a short public video; the other two download with tools you installed:
 
 ```sh
+cargo test --test tui_pty a_fresh_machine -- --ignored --nocapture
 cargo run -- install-tools
 export YT_DLP_TUI_LIVE_TOOLS="$(cargo run -q -- paths | sed -n 's/^Tools: //p')"
-cargo test --test live_download --test tui_pty -- --ignored --nocapture
+cargo test --test live_download --test tui_pty -- --ignored --skip a_fresh_machine --nocapture
 ```
 
 - [Architecture and security decisions](docs/ARCHITECTURE.md)

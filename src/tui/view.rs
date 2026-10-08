@@ -19,6 +19,7 @@ use super::{
         format_timestamp, format_when, hostname, job_meta, job_title, merge_downloads, percent_of,
         status_label, truncate,
     },
+    new_download::Engine,
     theme::Theme,
 };
 use crate::{
@@ -181,34 +182,38 @@ fn engine_banner(app: &App) -> Option<(String, Style)> {
         );
         return Some((format!("{status}  I cancels"), theme.accent()));
     }
-    if app.settings.yt_dlp_path.is_none() {
+    let missing = app.engine() == Engine::Missing;
+    if app.settings.yt_dlp_path.is_none() && installer::current_target().is_some() {
         let outdated = installer::outdated_components(&app.tools_dir);
         let installed = installer::installed_versions(&app.tools_dir);
-        if !outdated.is_empty() && installer::current_target().is_some() {
-            let names = outdated
-                .iter()
-                .map(|component| format!("{} {}", component.name, component.version))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let verb = if outdated
-                .iter()
-                .any(|component| installed.contains_key(&component.id))
-            {
-                "Update available"
-            } else {
-                "Not installed yet"
-            };
+        let size = format_bytes(Some(installer::download_size(&outdated) as f64));
+        if missing {
             return Some((
                 format!(
-                    "{verb}: {names}. Press I to install the pinned, checksum-verified builds."
+                    "The download engine isn't set up yet. Press I to install the app's own copy of yt-dlp, Deno, and FFmpeg ({size}). Nothing else needs to be installed."
                 ),
                 theme.warning(),
             ));
         }
+        if !outdated.is_empty() {
+            let names = outdated
+                .iter()
+                .map(|component| match installed.get(&component.id) {
+                    Some(old) => format!("{} {old} → {}", component.name, component.version),
+                    None => format!("{} {}", component.name, component.version),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Some((
+                format!("Pinned tools to install: {names} ({size}). Press I to install them."),
+                theme.warning(),
+            ));
+        }
     }
-    if !app.dependencies.is_empty() && !app.yt_dlp_ready() {
+    if missing {
         return Some((
-            "yt-dlp isn't working. Open Settings (s) to check the download engine.".into(),
+            "The chosen yt-dlp isn't working. Open Settings (s) to check the download engine."
+                .into(),
             theme.error(),
         ));
     }
@@ -728,17 +733,12 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     if app.queue_paused {
         left.push(Span::styled("   Queue paused", theme.warning()));
     }
-    let engine_ready = app.yt_dlp_ready();
-    let (dot, label) = if app.install.is_some() {
-        (theme.accent(), "Installing tools")
-    } else if app.dependencies.is_empty() {
-        (theme.faint(), "Checking engine")
-    } else if engine_ready && tool_ok(app, DependencyKind::Ffmpeg) {
-        (theme.success(), "Engine ready")
-    } else if engine_ready {
-        (theme.warning(), "FFmpeg missing")
-    } else {
-        (theme.error(), "Engine needs attention")
+    let (dot, label) = match app.engine() {
+        _ if app.install.is_some() => (theme.accent(), "Setting up engine"),
+        Engine::Checking => (theme.faint(), "Checking engine"),
+        Engine::Ready if tool_ok(app, DependencyKind::Ffmpeg) => (theme.success(), "Engine ready"),
+        Engine::Ready => (theme.warning(), "FFmpeg missing"),
+        Engine::Missing => (theme.warning(), "Engine not set up"),
     };
     let right = vec![
         Span::styled("● ", dot),
@@ -800,6 +800,9 @@ fn render_hints(frame: &mut Frame, area: Rect, app: &App) {
             ],
             None => {
                 let mut hints = vec![("n", "new")];
+                if app.engine() == Engine::Missing {
+                    hints.push(("I", "set up engine"));
+                }
                 if let Some(job) = app.selected_job() {
                     hints.push(("Enter", "details"));
                     if job.status.is_running() || job.status == JobStatus::Queued {

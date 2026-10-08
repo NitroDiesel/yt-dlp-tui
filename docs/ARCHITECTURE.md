@@ -24,7 +24,7 @@ AppService ─────────── queue scheduler (1–4 at a time)
 - `integration/yt_dlp`: typed argument construction, analysis, the progress protocol, redaction, and the child-process lifecycle.
 - `integration/ffmpeg`: runtime NVENC/AMF probes and the non-destructive GPU conversion stage.
 - `integration/dependencies`: resolves a custom executable first, then the managed tools folder. `PATH` is never searched.
-- `integration/installer`: downloads `packaging/components.json` pins, verifies SHA-256 while streaming, extracts only the named archive entries, and swaps a component in only after all of its files are ready.
+- `integration/installer`: downloads `packaging/components.json` pins, enforces each file's pinned size and SHA-256 while streaming, extracts only the named archive entries, and swaps a component in only after all of its files are ready.
 - `persistence`: migrations and SQLite queries.
 - `platform`: opens a validated completed file or its folder.
 - `tui`: the event loop, `App` state, a shared keyboard form model used by New download and Settings, and the views.
@@ -32,6 +32,8 @@ AppService ─────────── queue scheduler (1–4 at a time)
 ## Interface model
 
 The event loop draws, then waits on whichever arrives first: terminal input (read on a dedicated thread that polls and exits when its channel closes), results of background work (`Message`), job updates from the service (`ServiceEvent`), or a half-second tick. Nothing that starts a process runs on the loop itself.
+
+The app never needs a yt-dlp installed by the user. The startup tool check runs in the background, so New download knows three engine states: checking, ready, and missing. A link that arrives before the engine is ready (pasted early, or given on the command line) waits and is read once the check or setup finishes. The first time the check finds no engine, and no custom executable is configured, the app offers to set up its pinned tools by itself; pressing Enter on a link while the engine is missing offers it again.
 
 Forms rebuild their rows from state on every frame, so controls appear exactly when their options apply, and focus is tracked by a stable field id rather than a row index. Service events and background results travel on separate channels, so a result that describes an older state of a job (such as the one returned by enqueue) never overwrites a newer event.
 
@@ -58,5 +60,5 @@ The database lives in the platform data folder (or `YT_DLP_TUI_DATA_DIR`). An ex
 - Cookie files are referenced by path and never copied. Browser cookies are read by yt-dlp itself.
 - Diagnostics from both output streams are bounded and redact URL credentials, query secrets, authorization and cookie headers, and the home folder.
 - Open and reveal accept a job id, re-validate that its file is inside the job's destination, and only then call the platform opener.
-- Tool downloads are pinned to exact URLs and SHA-256 digests compiled into the app. A mismatch installs nothing. Only named archive entries are extracted, to fixed names, so archive paths never choose where files land. Nothing downloaded is executed during installation.
+- Tool downloads are pinned to exact URLs, sizes, and SHA-256 digests compiled into the app. A mismatch installs nothing. Only named archive entries are extracted, to fixed names, so archive paths never choose where files land. Nothing downloaded is executed during installation.
 - There is no free-text argument box. Every yt-dlp feature is a typed control with validation.

@@ -12,6 +12,7 @@
           {
             "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux",
             "sha256": "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a",
+            "size": 40446224,
             "archive": "binary",
             "entries": { "yt-dlp": "" }
           }
@@ -20,6 +21,7 @@
           {
             "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux_aarch64",
             "sha256": "b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc",
+            "size": 40167448,
             "archive": "binary",
             "entries": { "yt-dlp": "" }
           }
@@ -28,6 +30,7 @@
           {
             "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
             "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
+            "size": 17840399,
             "archive": "binary",
             "entries": { "yt-dlp": "" }
           }
@@ -36,6 +39,7 @@
           {
             "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos",
             "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
+            "size": 37146048,
             "archive": "binary",
             "entries": { "yt-dlp": "" }
           }
@@ -44,6 +48,7 @@
           {
             "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos",
             "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
+            "size": 37146048,
             "archive": "binary",
             "entries": { "yt-dlp": "" }
           }
@@ -61,6 +66,7 @@
           {
             "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-unknown-linux-gnu.zip",
             "sha256": "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490",
+            "size": 41596794,
             "archive": "zip",
             "entries": { "deno": "deno" }
           }
@@ -69,6 +75,7 @@
           {
             "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-aarch64-unknown-linux-gnu.zip",
             "sha256": "c832298b1ad4422481334855f6003e0f54145762c5a134f20a489511d2f65bbf",
+            "size": 39821318,
             "archive": "zip",
             "entries": { "deno": "deno" }
           }
@@ -77,6 +84,7 @@
           {
             "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip",
             "sha256": "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238",
+            "size": 42630221,
             "archive": "zip",
             "entries": { "deno": "deno.exe" }
           }
@@ -85,6 +93,7 @@
           {
             "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-aarch64-apple-darwin.zip",
             "sha256": "5cd46d6268f6f78f5d88bdc7159d20bd44cdaa4b3303474839f87ec6fe7ae25c",
+            "size": 38469316,
             "archive": "zip",
             "entries": { "deno": "deno" }
           }
@@ -93,6 +102,7 @@
           {
             "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-apple-darwin.zip",
             "sha256": "95daaff11c116a52ad54785e7914c8e9c9cdcaba793c5ed929c74ca2d8e6259a",
+            "size": 42295422,
             "archive": "zip",
             "entries": { "deno": "deno" }
           }
@@ -110,6 +120,7 @@
           {
             "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-30-13-34/ffmpeg-n8.1.2-21-gce3c09c101-linux64-gpl-8.1.tar.xz",
             "sha256": "0ba73bbd93472c7622f6dec26d334c5e62e64d858d072490b2844320970456cd",
+            "size": 124756048,
             "archive": "tar.xz",
             "entries": {
               "ffmpeg": "ffmpeg-n8.1.2-21-gce3c09c101-linux64-gpl-8.1/bin/ffmpeg",
@@ -121,6 +132,7 @@
           {
             "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-30-13-34/ffmpeg-n8.1.2-21-gce3c09c101-linuxarm64-gpl-8.1.tar.xz",
             "sha256": "d3f90a71a38238466de2e4dc98537862d244e3307383435f94cbc4b8491033f8",
+            "size": 106131164,
             "archive": "tar.xz",
             "entries": {
               "ffmpeg": "ffmpeg-n8.1.2-21-gce3c09c101-linuxarm64-gpl-8.1/bin/ffmpeg",
@@ -132,6 +144,7 @@
           {
             "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-30-13-34/ffmpeg-n8.1.2-21-gce3c09c101-win64-gpl-8.1.zip",
             "sha256": "682361e32c9631caec09e5d9f09077101c9ed90c14e275f62014fefa6d397990",
+            "size": 166372072,
             "archive": "zip",
             "entries": {
               "ffmpeg": "ffmpeg-n8.1.2-21-gce3c09c101-win64-gpl-8.1/bin/ffmpeg.exe",
@@ -143,12 +156,14 @@
           {
             "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffmpeg.zip",
             "sha256": "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c",
+            "size": 28196358,
             "archive": "zip",
             "entries": { "ffmpeg": "ffmpeg" }
           },
           {
             "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffprobe.zip",
             "sha256": "c39787f4af7a3932502d2d48db6f6feaaa836b48a73ef78c32cc3285df61dfaf",
+            "size": 28118222,
             "archive": "zip",
             "entries": { "ffprobe": "ffprobe" }
           }
@@ -157,12 +172,14 @@
           {
             "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1783018342_8.1.2/ffmpeg.zip",
             "sha256": "a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9",
+            "size": 33586778,
             "archive": "zip",
             "entries": { "ffmpeg": "ffmpeg" }
           },
           {
             "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1783018342_8.1.2/ffprobe.zip",
             "sha256": "5408ca588c8c72b0dde3afe676d0a7acf25ef97e55ae6eba5c7bede1cda42695",
+            "size": 33477267,
             "archive": "zip",
             "entries": { "ffprobe": "ffprobe" }
           }

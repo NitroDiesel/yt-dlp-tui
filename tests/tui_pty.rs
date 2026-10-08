@@ -24,6 +24,12 @@ struct Session {
 
 impl Session {
     fn start(home: &Path, tools: &Path) -> Self {
+        Self::launch(home, tools, None, &[])
+    }
+
+    /// Starts the app with `extra_path` ahead of the system folders on
+    /// `PATH`, and `args` on its command line.
+    fn launch(home: &Path, tools: &Path, extra_path: Option<&Path>, args: &[&str]) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: ROWS,
@@ -33,10 +39,15 @@ impl Session {
             })
             .unwrap();
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_yt-dlp-tui"));
+        command.args(args);
         command.env_clear();
         command.env("HOME", home);
         command.env("TERM", "xterm-256color");
-        command.env("PATH", "/usr/bin:/bin");
+        let path = match extra_path {
+            Some(extra) => format!("{}:/usr/bin:/bin", extra.display()),
+            None => "/usr/bin:/bin".into(),
+        };
+        command.env("PATH", path);
         command.env("YT_DLP_TUI_DATA_DIR", home.join("data"));
         command.env("YT_DLP_TUI_TOOLS_DIR", tools);
         command.cwd(home);
@@ -76,7 +87,11 @@ impl Session {
     }
 
     fn wait_for(&mut self, text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        self.wait_for_within(text, Duration::from_secs(20));
+    }
+
+    fn wait_for_within(&mut self, text: &str, limit: Duration) {
+        let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             if self.contents().contains(text) {
                 return;
@@ -118,7 +133,7 @@ fn pastes_a_link_downloads_it_and_navigates_the_app() {
 
     session.wait_for("Paste a link to start");
     session.wait_for("FFmpeg missing");
-    assert!(session.contents().contains("Not installed yet"));
+    assert!(session.contents().contains("Pinned tools to install"));
     session.snapshot("First launch");
 
     // Pasting a link anywhere opens New download and reads it.
@@ -278,6 +293,49 @@ fn quitting_mid_download_leaves_it_ready_to_resume() {
 }
 
 #[test]
+fn a_fresh_machine_sets_up_its_own_engine_and_ignores_yt_dlp_on_path() {
+    let home = tempfile::tempdir().unwrap();
+    let empty_tools = tempfile::tempdir().unwrap();
+    // A yt-dlp on PATH must never be picked up.
+    let system = fake_tools();
+    let mut session = Session::launch(home.path(), empty_tools.path(), Some(system.path()), &[]);
+
+    session.wait_for("Set up the download engine?");
+    session.wait_for("so you don't need yt-dlp,");
+    session.snapshot("First launch on a fresh machine");
+    session.send("\x1b");
+    session.wait_for("The download engine isn't set up yet. Press I");
+    session.wait_for("Engine not set up");
+    session.wait_for("I set up engine");
+
+    // A link pasted before setup asks for setup instead of failing.
+    session.send("\x1b[200~https://example.test/video\x1b[201~");
+    session.wait_for("isn't set up yet. Press Enter to install");
+    session.wait_for("Set up the download engine?");
+    session.send("\x1b");
+    session.send("\x1b");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn a_link_given_at_launch_is_read_once_the_engine_check_finishes() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::launch(
+        home.path(),
+        tools.path(),
+        None,
+        &["https://example.test/video"],
+    );
+    session.wait_for("Fixture channel on example.test");
+    session.wait_for("Add to queue");
+    session.send("\x1b");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
 fn refuses_to_run_twice_on_the_same_data() {
     let home = tempfile::tempdir().unwrap();
     let tools = fake_tools();
@@ -316,6 +374,45 @@ fn downloads_through_the_interface_with_the_pinned_engine() {
         saved.iter().any(|name| name.starts_with("Me at the zoo")),
         "{saved:?}"
     );
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+/// A machine with no yt-dlp, Deno, or app tools: the app installs its own
+/// engine at first launch, then reads the link it was started with.
+#[test]
+#[ignore = "downloads the pinned tools (about 200 MB) and a video from YouTube"]
+fn a_fresh_machine_downloads_with_nothing_preinstalled() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let mut session = Session::launch(
+        home.path(),
+        tools.path(),
+        None,
+        &["https://www.youtube.com/watch?v=jNQXAC9IVRw"],
+    );
+    session.wait_for("Set up the download engine?");
+    session.snapshot("Fresh machine, first launch with a link");
+    session.send("\r");
+    session.wait_for("Setting up engine");
+    session.wait_for_within("Engine ready", Duration::from_secs(600));
+    session.wait_for("jawed on youtube.com");
+    session.wait_for("Add to queue");
+    session.snapshot("Engine installed and link read");
+    session.send("\x04");
+    session.wait_for_within("Completed 1  Stopped", Duration::from_secs(120));
+    session.snapshot("Downloaded");
+    assert!(tools.path().join("installed.json").is_file());
+    let saved = std::fs::read_dir(home.path().join("Downloads"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("Me at the zoo")
+        });
+    assert!(saved, "the video is in ~/Downloads");
     session.send("q");
     wait_for_exit(&mut session);
 }

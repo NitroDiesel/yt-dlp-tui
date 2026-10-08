@@ -26,8 +26,6 @@ use crate::{
 
 const MANIFEST_JSON: &str = include_str!("../../packaging/components.json");
 const INSTALLED_FILE: &str = "installed.json";
-/// Larger than any pinned archive (FFmpeg for Windows is ~170 MB).
-const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +49,8 @@ pub struct Component {
 pub struct Artifact {
     pub url: String,
     pub sha256: String,
+    /// Exact length in bytes; anything else is rejected while downloading.
+    pub size: u64,
     pub archive: ArchiveKind,
     /// Installed tool name (without `.exe`) to its path inside the archive.
     pub entries: BTreeMap<String, String>,
@@ -131,6 +131,19 @@ pub fn outdated_components(dir: &Path) -> Vec<&'static Component> {
             !complete || installed.get(&component.id) != Some(&component.version)
         })
         .collect()
+}
+
+/// Bytes this machine downloads to install `components`.
+pub fn download_size(components: &[&Component]) -> u64 {
+    let Some(target) = current_target() else {
+        return 0;
+    };
+    components
+        .iter()
+        .filter_map(|component| component.targets.get(target))
+        .flatten()
+        .map(|artifact| artifact.size)
+        .sum()
 }
 
 /// Installs every component that `outdated_components` reports, or all of
@@ -230,13 +243,10 @@ fn download_verified(
         .get(&artifact.url)
         .call()
         .map_err(|error| AppError::Install(format!("{}: {error}", artifact.url)))?;
-    let total = response.body().content_length();
-    if total.is_some_and(|total| total > MAX_DOWNLOAD_BYTES) {
-        return Err(AppError::Install(format!(
-            "{} is larger than expected",
-            artifact.url
-        )));
+    if let Some(length) = response.body().content_length() {
+        check_size(length, artifact)?;
     }
+    let total = Some(artifact.size);
     let mut reader = response.body_mut().as_reader();
     let mut file = File::create(destination)?;
     let mut hasher = Sha256::new();
@@ -256,11 +266,8 @@ fn download_verified(
             }
         };
         downloaded += read as u64;
-        if downloaded > MAX_DOWNLOAD_BYTES {
-            return Err(AppError::Install(format!(
-                "{} is larger than expected",
-                artifact.url
-            )));
+        if downloaded > artifact.size {
+            check_size(downloaded, artifact)?;
         }
         hasher.update(&buffer[..read]);
         file.write_all(&buffer[..read])?;
@@ -271,7 +278,19 @@ fn download_verified(
     }
     file.sync_all()?;
     progress(downloaded, total);
+    check_size(downloaded, artifact)?;
     verify_digest(&hasher.finalize(), &artifact.sha256, &artifact.url)
+}
+
+fn check_size(bytes: u64, artifact: &Artifact) -> AppResult<()> {
+    if bytes == artifact.size {
+        Ok(())
+    } else {
+        Err(AppError::Install(format!(
+            "{} is {bytes} bytes, but the pinned file is {} bytes. Nothing was installed.",
+            artifact.url, artifact.size
+        )))
+    }
 }
 
 fn verify_digest(actual: &[u8], expected: &str, label: &str) -> AppResult<()> {
@@ -399,6 +418,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{} lacks {target}", component.id));
                 for artifact in artifacts {
                     assert!(artifact.url.starts_with("https://"));
+                    assert!(artifact.size > 1_000_000, "{} has a size", artifact.url);
                     assert_eq!(artifact.sha256.len(), 64);
                     assert!(artifact.sha256.chars().all(|c| c.is_ascii_hexdigit()));
                 }
@@ -410,6 +430,29 @@ mod tests {
     fn pins_the_latest_audited_yt_dlp() {
         let yt_dlp = &manifest().components[0];
         assert_eq!(yt_dlp.version, "2026.08.19");
+    }
+
+    #[test]
+    fn only_the_pinned_size_is_accepted() {
+        let artifact = Artifact {
+            url: "https://example.test/tool".into(),
+            sha256: String::new(),
+            size: 100,
+            archive: ArchiveKind::Binary,
+            entries: BTreeMap::new(),
+        };
+        assert!(check_size(100, &artifact).is_ok());
+        assert!(check_size(99, &artifact).is_err());
+        assert!(check_size(101, &artifact).is_err());
+    }
+
+    #[test]
+    fn reports_the_download_size_for_this_machine() {
+        let all = manifest().components.iter().collect::<Vec<_>>();
+        if current_target().is_some() {
+            assert!(download_size(&all) > download_size(&all[..1]));
+        }
+        assert_eq!(download_size(&[]), 0);
     }
 
     #[test]
@@ -442,6 +485,7 @@ mod tests {
         let artifact = Artifact {
             url: "https://example.test/tools.zip".into(),
             sha256: String::new(),
+            size: 0,
             archive: ArchiveKind::Zip,
             entries: BTreeMap::from([("deno".into(), "pkg/bin/deno".into())]),
         };
@@ -474,6 +518,7 @@ mod tests {
         let mut artifact = Artifact {
             url: "https://example.test/tools.tar.xz".into(),
             sha256: String::new(),
+            size: 0,
             archive: ArchiveKind::TarXz,
             entries: BTreeMap::from([("ffmpeg".into(), "pkg/bin/ffmpeg".into())]),
         };
