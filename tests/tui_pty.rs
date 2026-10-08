@@ -104,11 +104,26 @@ impl Session {
         );
     }
 
+    fn wait_until_gone(&mut self, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if !self.contents().contains(text) {
+                return;
+            }
+            self.pump(Duration::from_millis(50));
+        }
+        panic!(
+            "timed out waiting for {text:?} to go away. Screen:\n{}",
+            self.contents()
+        );
+    }
+
+    /// Terminals send Alt+key as Escape followed by the key, so a key sent
+    /// right after Escape can merge with it into Alt+key. After Escape, wait
+    /// for a screen state that proves it was handled.
     fn send(&mut self, bytes: &str) {
         self.writer.write_all(bytes.as_bytes()).unwrap();
         self.writer.flush().unwrap();
-        // Let the app read the key before the next one, so a lone Escape
-        // isn't merged with what follows.
         self.pump(Duration::from_millis(150));
     }
 
@@ -161,7 +176,7 @@ fn pastes_a_link_downloads_it_and_navigates_the_app() {
     session.wait_for("2026.08.19");
     session.snapshot("Settings");
     session.send("\x1b");
-    session.wait_for("All downloads");
+    session.wait_for("n new");
 
     session.send("n");
     session.wait_for("Paste a video, playlist, or channel link");
@@ -169,6 +184,7 @@ fn pastes_a_link_downloads_it_and_navigates_the_app() {
     session.wait_for("Couldn't read that link");
     session.snapshot("Analysis failed");
     session.send("\x1b");
+    session.wait_for("n new");
 
     session.send("q");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -214,6 +230,7 @@ fn saves_settings_that_survive_a_restart() {
     session.send("\x13");
     session.wait_for("Settings saved");
     session.send("\x1b");
+    session.wait_for("Paste a link to start");
     session.send("q");
     wait_for_exit(&mut session);
 
@@ -222,6 +239,7 @@ fn saves_settings_that_survive_a_restart() {
     session.send("s");
     session.wait_for("Downloads at once    2");
     session.send("\x1b");
+    session.wait_for("Paste a link to start");
     session.send("q");
     wait_for_exit(&mut session);
 }
@@ -254,7 +272,9 @@ fn confirms_whole_playlists_and_offers_current_sponsorblock_segments() {
     session.wait_for("Highlight (mark only)");
     session.snapshot("SponsorBlock segments");
     session.send("\x1b");
+    session.wait_until_gone("Space check");
     session.send("\x1b");
+    session.wait_for("n new");
 
     session.send("\x1b[200~https://example.test/playlist\x1b[201~");
     session.wait_for("Playlist of 3");
@@ -313,7 +333,9 @@ fn a_fresh_machine_sets_up_its_own_engine_and_ignores_yt_dlp_on_path() {
     session.wait_for("isn't set up yet. Press Enter to install");
     session.wait_for("Set up the download engine?");
     session.send("\x1b");
+    session.wait_until_gone("Set up the download engine?");
     session.send("\x1b");
+    session.wait_for("n new");
     session.send("q");
     wait_for_exit(&mut session);
 }
@@ -331,6 +353,7 @@ fn a_link_given_at_launch_is_read_once_the_engine_check_finishes() {
     session.wait_for("Fixture channel on example.test");
     session.wait_for("Add to queue");
     session.send("\x1b");
+    session.wait_for("n new");
     session.send("q");
     wait_for_exit(&mut session);
 }
