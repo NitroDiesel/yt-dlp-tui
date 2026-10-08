@@ -66,7 +66,8 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends gcc-${{ matrix.cross }}
+          # The C library headers are only a recommendation of the compiler package.
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends gcc-${{ matrix.cross }} libc6-dev-arm64-cross
           {
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.cross }}-gcc"
             echo "CC_aarch64_unknown_linux_gnu=${{ matrix.cross }}-gcc"
