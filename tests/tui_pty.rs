@@ -316,6 +316,8 @@ fn quitting_mid_download_leaves_it_ready_to_resume() {
     session.wait_for("Add to queue");
     session.send("\x04");
     session.wait_for("Active 1");
+    // The job update can arrive before the form closes; keys must reach the list.
+    session.wait_until_gone("Add to queue");
     session.send("q");
     session.wait_for("1 download is running and will stop");
     session.snapshot("Quit confirmation");
