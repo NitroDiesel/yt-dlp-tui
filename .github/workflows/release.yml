@@ -121,7 +121,8 @@ jobs:
         run: |
           dotnet tool install --global wix --version 5.0.2
           $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
-          wix build -arch x64 `
+          # -pdbtype none: no .wixpdb debug file lands in dist/ beside the MSI.
+          wix build -arch x64 -pdbtype none `
             -d "Version=$env:PACKAGE_VERSION" `
             -d "Binary=target/${{ matrix.target }}/release/yt-dlp-tui.exe" `
             -d License=LICENSE -d Readme=README.md `
