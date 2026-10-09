@@ -2,9 +2,22 @@
 
 Each release's section here becomes its GitHub release notes.
 
-## Unreleased
+## v0.2.0
 
-- Mouse support: click the sidebar, downloads, buttons, form fields, picker options, confirmation buttons, and the key hints along the bottom; double-click a download for its details; scroll lists, details, forms, and pickers with the wheel; clickable items underline on hover. The download details panel gains buttons for its actions. Hold Shift while dragging to select text, or turn the mouse off under Settings → Appearance.
+### Mouse support
+
+- Click the sidebar, downloads, buttons, form fields, picker options, confirmation buttons, and the key hints along the bottom.
+- Double-click a download to show its details. The details panel now has buttons for its actions: cancel, retry, move up or down, open the file, show it in its folder, copy the link, and remove.
+- Scroll the downloads list, details, forms, and pickers with the wheel. Clickable items underline when the pointer is over them.
+- Hold Shift while dragging to select text, or turn the mouse off under Settings → Appearance to leave it to the terminal.
+
+### Fixed
+
+- `yt-dlp-tui --help`, `--version`, and `paths` no longer panic when their output is piped into a command that stops reading early, such as `head`.
+
+### Install
+
+Download the archive for your platform, check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui`. Nothing else needs to be installed; accept the setup prompt on first launch. Requirements and pinned tool versions are unchanged from v0.1.0.
 
 ## v0.1.0
 

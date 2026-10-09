@@ -30,6 +30,13 @@ Environment:
   NO_COLOR               Turn colors off
 ";
 
+/// Prints to standard output, ignoring a closed pipe (`yt-dlp-tui --help | head`).
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
 fn data_dir() -> PathBuf {
     std::env::var_os("YT_DLP_TUI_DATA_DIR")
         .map(PathBuf::from)
@@ -56,17 +63,17 @@ fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["-h" | "--help"] => {
-            print!("{USAGE}");
+            let _ = write!(std::io::stdout(), "{USAGE}");
             Ok(())
         }
         ["-V" | "--version"] => {
-            println!("yt-dlp-tui {}", env!("CARGO_PKG_VERSION"));
-            println!("Pinned tools: {}", pinned_versions());
+            out!("yt-dlp-tui {}", env!("CARGO_PKG_VERSION"));
+            out!("Pinned tools: {}", pinned_versions());
             Ok(())
         }
         ["paths"] => {
-            println!("Data:  {}", data_dir().display());
-            println!("Tools: {}", tools_dir().display());
+            out!("Data:  {}", data_dir().display());
+            out!("Tools: {}", tools_dir().display());
             Ok(())
         }
         ["install-tools"] => install_tools(false),
@@ -86,7 +93,7 @@ fn main() -> ExitCode {
 
 fn install_tools(reinstall: bool) -> Result<(), String> {
     let directory = tools_dir();
-    println!(
+    out!(
         "Installing {} into {}",
         pinned_versions(),
         directory.display()
@@ -108,14 +115,14 @@ fn install_tools(reinstall: bool) -> Result<(), String> {
             }
         };
         if line != last {
-            print!("\r\x1b[2K{line}");
+            let _ = write!(std::io::stdout(), "\r\x1b[2K{line}");
             let _ = std::io::stdout().flush();
             last = line;
         }
     })
     .map_err(|error| error.to_string())?;
     if installed.is_empty() {
-        println!("The pinned tools are already installed. Use --reinstall to replace them.");
+        out!("The pinned tools are already installed. Use --reinstall to replace them.");
     }
     Ok(())
 }
