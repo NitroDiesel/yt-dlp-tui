@@ -175,7 +175,8 @@ jobs:
           sudo dpkg -i "dist/$PACKAGE_NAME.deb"
           yt-dlp-tui --version
           sudo dpkg -r yt-dlp-tui
-          ! command -v yt-dlp-tui
+          # Check the file, not `command -v`: bash remembers the path it ran.
+          test ! -e /usr/bin/yt-dlp-tui
 
       - name: Build the macOS installer
         if: runner.os == 'macOS'

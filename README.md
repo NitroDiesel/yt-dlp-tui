@@ -18,7 +18,15 @@ A keyboard-driven terminal interface for [yt-dlp](https://github.com/yt-dlp/yt-d
 
 ## Install
 
-Download the archive for your platform from the [Releases page](https://github.com/NitroDiesel/yt-dlp-tui/releases), check it against `SHA256SUMS.txt`, extract it, and run `./yt-dlp-tui`. You don't need to install yt-dlp or anything else first: on first launch the app asks to set up its own download engine, and a link you started it with is read as soon as setup finishes. To set up ahead of time, for example on a server, run `./yt-dlp-tui install-tools`.
+Download from the [Releases page](https://github.com/NitroDiesel/yt-dlp-tui/releases) and check the file against `SHA256SUMS.txt`:
+
+| Platform | Installer | Standalone |
+|---|---|---|
+| Windows x64 | `.msi`: installs to Program Files, adds `yt-dlp-tui` to `PATH`, and adds a Start Menu entry | `.exe`, or the `.zip` |
+| Linux x86_64 / aarch64 | `.deb`: `sudo apt install ./yt-dlp-tui-….deb` | the executable (`chmod +x`), or the `.tar.gz` |
+| macOS Apple silicon / Intel | `.pkg`: installs to `/usr/local/bin` | the executable (`chmod +x`), or the `.tar.gz` |
+
+Then run `yt-dlp-tui` (or `./yt-dlp-tui` for a standalone file). You don't need to install yt-dlp or anything else first: on first launch the app asks to set up its own download engine, and a link you started it with is read as soon as setup finishes. To set up ahead of time, for example on a server, run `./yt-dlp-tui install-tools`.
 
 To build from source instead (Rust 1.94 or newer):
 

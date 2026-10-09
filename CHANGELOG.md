@@ -2,6 +2,18 @@
 
 Each release's section here becomes its GitHub release notes.
 
+## v0.2.1
+
+### Installers and standalone executables
+
+Every release now includes, for each platform:
+
+- **Windows x64:** an `.msi` installer (installs to Program Files, adds `yt-dlp-tui` to `PATH`, adds a Start Menu entry, and uninstalls from Settings → Apps), a standalone `.exe`, and the `.zip`.
+- **Linux x86_64 and aarch64:** a `.deb` package (`sudo apt install ./yt-dlp-tui-….deb`), a standalone executable, and the `.tar.gz`.
+- **macOS Apple silicon and Intel:** a `.pkg` installer (installs to `/usr/local/bin`), a standalone executable, and the `.tar.gz`.
+
+Standalone executables downloaded through a browser on Linux or macOS need `chmod +x` first. The installers and executables are not code-signed, so Windows SmartScreen or macOS Gatekeeper may ask before running them. Your downloads and the app's tools live in your user data folder, so uninstalling keeps them.
+
 ## v0.2.0
 
 ### Mouse support
