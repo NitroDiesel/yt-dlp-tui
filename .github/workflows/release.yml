@@ -48,9 +48,11 @@ jobs:
           # 22.04 keeps the glibc requirement low (2.34 for v0.1.0).
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            deb: amd64
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             cross: aarch64-linux-gnu
+            deb: arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           - os: macos-15-intel
@@ -90,27 +92,112 @@ jobs:
           "$binary" --version | tee version.txt
           grep -q "yt-dlp 2026.08.19" version.txt
           "$binary" paths
-      - name: Package
+      - name: Package archives and standalone executables
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then version="$GITHUB_REF_NAME"; else version="dev-${GITHUB_SHA::7}"; fi
-          name="yt-dlp-tui-$version-${{ matrix.target }}"
-          mkdir "$name"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then label="$GITHUB_REF_NAME"; else label="dev-${GITHUB_SHA::7}"; fi
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          name="yt-dlp-tui-$label-${{ matrix.target }}"
+          echo "PACKAGE_NAME=$name" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p dist "$name"
           cp README.md LICENSE CHANGELOG.md "$name/"
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cp "target/${{ matrix.target }}/release/yt-dlp-tui.exe" "$name/"
-            7z a -tzip "$name.zip" "$name" > /dev/null
+            binary="target/${{ matrix.target }}/release/yt-dlp-tui.exe"
+            cp "$binary" "$name/"
+            cp "$binary" "dist/$name.exe"
+            7z a -tzip "dist/$name.zip" "$name" > /dev/null
           else
-            cp "target/${{ matrix.target }}/release/yt-dlp-tui" "$name/"
-            tar -czf "$name.tar.gz" "$name"
+            binary="target/${{ matrix.target }}/release/yt-dlp-tui"
+            cp "$binary" "$name/"
+            install -m 0755 "$binary" "dist/$name"
+            tar -czf "dist/$name.tar.gz" "$name"
           fi
+
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+          wix build -arch x64 `
+            -d "Version=$env:PACKAGE_VERSION" `
+            -d "Binary=target/${{ matrix.target }}/release/yt-dlp-tui.exe" `
+            -d License=LICENSE -d Readme=README.md `
+            -o "dist/$env:PACKAGE_NAME.msi" packaging/windows/yt-dlp-tui.wxs
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+      - name: Install, run, and uninstall the MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "dist/$env:PACKAGE_NAME.msi").Path
+          $install = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "install failed: $($install.ExitCode)" }
+          $exe = "$env:ProgramFiles\yt-dlp TUI\yt-dlp-tui.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "the installed program failed" }
+          if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -notlike '*yt-dlp TUI*') { throw "PATH was not updated" }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\yt-dlp TUI.lnk")) { throw "no Start Menu shortcut" }
+          $remove = Start-Process msiexec.exe -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "uninstall failed: $($remove.ExitCode)" }
+          if (Test-Path $exe) { throw "uninstalling left the program behind" }
+
+      - name: Build the Debian package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="deb/yt-dlp-tui"
+          install -Dm0755 "target/${{ matrix.target }}/release/yt-dlp-tui" "$root/usr/bin/yt-dlp-tui"
+          install -Dm0644 LICENSE "$root/usr/share/doc/yt-dlp-tui/copyright"
+          install -Dm0644 README.md "$root/usr/share/doc/yt-dlp-tui/README.md"
+          mkdir -p "$root/DEBIAN"
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: yt-dlp-tui
+          Version: $PACKAGE_VERSION
+          Architecture: ${{ matrix.deb }}
+          Maintainer: NitroDiesel <228459919+NitroDiesel@users.noreply.github.com>
+          Section: video
+          Priority: optional
+          Depends: libc6 (>= 2.34)
+          Homepage: https://github.com/NitroDiesel/yt-dlp-tui
+          Description: Keyboard and mouse terminal interface for yt-dlp
+           Analyzes a link and downloads video or audio, with yt-dlp's options as
+           form controls. Sets up its own pinned yt-dlp, Deno, and FFmpeg on first launch.
+          EOF
+          dpkg-deb --root-owner-group --build "$root" "dist/$PACKAGE_NAME.deb"
+      - name: Install, run, and remove the Debian package
+        if: runner.os == 'Linux' && !matrix.cross
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg -i "dist/$PACKAGE_NAME.deb"
+          yt-dlp-tui --version
+          sudo dpkg -r yt-dlp-tui
+          ! command -v yt-dlp-tui
+
+      - name: Build the macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pkgroot/usr/local/bin
+          install -m 0755 "target/${{ matrix.target }}/release/yt-dlp-tui" pkgroot/usr/local/bin/yt-dlp-tui
+          pkgbuild --root pkgroot --identifier io.github.nitrodiesel.yt-dlp-tui \
+            --version "$PACKAGE_VERSION" --install-location / "dist/$PACKAGE_NAME.pkg"
+      - name: Install and run the macOS package
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo installer -pkg "dist/$PACKAGE_NAME.pkg" -target /
+          /usr/local/bin/yt-dlp-tui --version
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.target }}
-          path: |
-            yt-dlp-tui-*.tar.gz
-            yt-dlp-tui-*.zip
+          path: dist/*
           if-no-files-found: error
 
   publish:

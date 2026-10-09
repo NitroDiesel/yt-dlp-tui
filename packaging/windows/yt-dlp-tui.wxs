@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Windows installer, built by the release workflow with WiX 5:
+
+    wix build -arch x64 -d Version=0.2.1 -d Binary=path\to\yt-dlp-tui.exe
+      -d License=LICENSE -d Readme=README.md -o yt-dlp-tui.msi packaging\windows\yt-dlp-tui.wxs
+
+  The UpgradeCode never changes, so installing a newer version replaces the
+  older one. Downloads and the pinned tools live in the user's data folder,
+  not here, so uninstalling keeps them.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="yt-dlp TUI"
+    Manufacturer="yt-dlp TUI contributors"
+    Version="$(var.Version)"
+    UpgradeCode="4F4DC32D-3B71-41F2-8F6E-0893E87E629E"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of yt-dlp TUI is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/NitroDiesel/yt-dlp-tui" />
+    <Property Id="ARPCOMMENTS" Value="A keyboard and mouse terminal interface for yt-dlp." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="yt-dlp TUI" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Files" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="Executable" Source="$(var.Binary)" Name="yt-dlp-tui.exe" KeyPath="yes" />
+        <!-- So `yt-dlp-tui` runs from any new terminal. -->
+        <Environment
+          Id="AddToPath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Action="set"
+          Part="last"
+          System="yes"
+          Permanent="no" />
+      </Component>
+      <Component>
+        <File Id="License" Source="$(var.License)" Name="LICENSE.txt" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="Readme" Source="$(var.Readme)" Name="README.md" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <!-- A console program: the shortcut opens it in a terminal window. -->
+        <Shortcut
+          Id="ApplicationShortcut"
+          Name="yt-dlp TUI"
+          Description="Download video and audio with yt-dlp"
+          Target="[INSTALLFOLDER]yt-dlp-tui.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\yt-dlp-tui"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Files" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
