@@ -506,7 +506,7 @@ impl AppService {
                                 outcome.diagnostics.extend(converted.diagnostics);
                             }
                             Ok(Err(error)) => result = Err(error),
-                            Err(error) => result = Err(AppError::Process(error.to_string())),
+                            Err(error) => result = Err(AppError::Conversion(error.to_string())),
                         }
                     } else {
                         result = Err(AppError::DependencyMissing(format!(

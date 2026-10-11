@@ -475,18 +475,18 @@ pub async fn run_hardware_conversion(
     configure_grouped_background_process(&mut command);
     let mut child = command
         .spawn()
-        .map_err(|error| AppError::Process(error.to_string()))?;
+        .map_err(|error| AppError::Conversion(format!("FFmpeg could not be started: {error}")))?;
     let pid = child
         .id()
-        .ok_or_else(|| AppError::Process("FFmpeg has no process identifier".into()))?;
+        .ok_or_else(|| AppError::Conversion("FFmpeg has no process identifier".into()))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| AppError::Process("FFmpeg progress output is unavailable".into()))?;
+        .ok_or_else(|| AppError::Conversion("FFmpeg progress output is unavailable".into()))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| AppError::Process("FFmpeg diagnostic output is unavailable".into()))?;
+        .ok_or_else(|| AppError::Conversion("FFmpeg diagnostic output is unavailable".into()))?;
     if let Some(note) = &decode_note {
         let _ = events.send(RunnerEvent::Diagnostic(note.clone()));
     }
@@ -560,12 +560,19 @@ pub async fn run_hardware_conversion(
         }
         Some(status) => {
             let _ = tokio::fs::remove_file(&temporary_path).await;
-            Err(AppError::Process(format!(
-                "{} conversion exited with {status}. The original download was kept.",
-                encoder.provider.label()
-            )))
+            Err(conversion_failed(&encoder.provider, status))
         }
     }
+}
+
+fn conversion_failed(
+    provider: &HardwareEncoderProvider,
+    status: std::process::ExitStatus,
+) -> AppError {
+    AppError::Conversion(format!(
+        "FFmpeg stopped with {status} while encoding with {}. The original download was kept; the technical details show why.",
+        provider.label()
+    ))
 }
 
 fn available_output_path(input: &Path, provider: &HardwareEncoderProvider) -> AppResult<PathBuf> {
@@ -649,6 +656,21 @@ mod tests {
         assert!(has(["-c:v", "h264_nvenc"]));
         assert!(has(["-cq", "23"]));
         assert_eq!(args[args.len() - 3..], ["-f", "null", "-"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_conversion_blames_the_conversion_not_the_download_engine() {
+        use std::{os::unix::process::ExitStatusExt, process::ExitStatus};
+        let message = conversion_failed(
+            &HardwareEncoderProvider::Nvenc,
+            ExitStatus::from_raw(69 << 8),
+        )
+        .to_string();
+        assert!(message.starts_with("GPU conversion failed: FFmpeg stopped with exit status: 69"));
+        assert!(message.contains("NVIDIA NVENC"));
+        assert!(message.contains("The original download was kept"));
+        assert!(!message.contains("download engine"));
     }
 
     #[test]

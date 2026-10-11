@@ -2,6 +2,12 @@
 
 Each release's section here becomes its GitHub release notes.
 
+## v0.2.3
+
+### Fixed
+
+- A failed GPU conversion now says "GPU conversion failed" and names the encoder, instead of claiming the download engine couldn't start. The original download is kept, as before.
+
 ## v0.2.2
 
 ### Copy the technical details

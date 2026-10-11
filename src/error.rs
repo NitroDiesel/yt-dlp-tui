@@ -8,6 +8,9 @@ pub enum AppError {
     DependencyMissing(String),
     #[error("The download engine could not be started: {0}")]
     Process(String),
+    /// The download finished, but re-encoding it on the GPU did not.
+    #[error("GPU conversion failed: {0}")]
+    Conversion(String),
     /// yt-dlp ran but could not read the link; the message is already explained.
     #[error("{0}")]
     Analysis(String),
