@@ -12,7 +12,7 @@ A keyboard-driven terminal interface for [yt-dlp](https://github.com/yt-dlp/yt-d
 - Downloads only a selected timeframe, with an accurate or a fast keyframe cut. Clips are named after their range so they never shadow the full video.
 - Detects NVIDIA NVENC and AMD AMF at runtime and can re-encode a finished video on the GPU.
 - Shows every download in one list, filtered by Downloading, Completed, and Stopped, with live progress, speed, ETA, post-processing stages, errors, and diagnostics.
-- Supports pause, reorder, retry, cancel, remove, open file, and show in folder. Removing a download never deletes its file.
+- Supports pause, reorder, retry, cancel, remove, open file, show in folder, and delete file. Remove only takes a download off the list; Delete file removes a completed download's file from disk after asking.
 - Keeps the queue, history, and settings in SQLite. Quitting stops running downloads as *interrupted*; Retry resumes from the partial file.
 - Needs nothing else installed: no yt-dlp, Python, FFmpeg, or Deno. On first launch it offers to set up its own copies of yt-dlp 2026.08.19, Deno 2.9.7, and FFmpeg 8.1.2 (about 200 MB, depending on the platform), each checked against a size and SHA-256 built into the app. A yt-dlp or FFmpeg already on your system is never used unless you choose it in Settings.
 
@@ -47,7 +47,8 @@ Copy a link and paste it into the terminal, or press `n`. The form reads the lin
 | `↑` `↓` / `j` `k` | Select a download |
 | `Enter` / `Esc` | Show or hide details |
 | `1`–`4`, `Tab` | All, Downloading, Completed, Stopped |
-| `c` / `r` / `d` | Cancel / retry / remove from the list |
+| `c` / `r` / `d` | Cancel / retry / remove from the list (keeps the file) |
+| `D` | Delete a completed download's file from disk (asks first) |
 | `o` / `f` | Open the file / show it in its folder |
 | `y` | Copy the source link (OSC 52, works over SSH) |
 | `Y` | Copy the technical details: the request, the error, and every diagnostic line, ready for a bug report |

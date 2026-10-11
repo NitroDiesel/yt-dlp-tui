@@ -51,6 +51,12 @@ pub enum Message {
         result: Result<DownloadJob, String>,
     },
     Removed(String),
+    /// A download's file was deleted (or was already gone) and it left the list.
+    Deleted {
+        id: String,
+        name: String,
+        existed: bool,
+    },
     ClearedCompleted,
     Queue(Vec<DownloadJob>),
     Paused(bool),
@@ -86,6 +92,10 @@ pub enum ConfirmAction {
     },
     DiscardSettings,
     InstallTools,
+    DeleteFile {
+        id: String,
+        name: String,
+    },
 }
 
 #[derive(Debug)]
@@ -376,6 +386,17 @@ impl App {
                 Err(error) => self.notify(error, true),
             },
             Message::Removed(id) => self.forget_job(&id),
+            Message::Deleted { id, name, existed } => {
+                self.forget_job(&id);
+                if existed {
+                    self.notify(format!("Deleted {name}"), false);
+                } else {
+                    self.notify(
+                        format!("{name} was already gone; removed it from the list"),
+                        false,
+                    );
+                }
+            }
             Message::ClearedCompleted => {
                 self.queue.retain(|job| job.status != JobStatus::Completed);
                 self.history
@@ -794,6 +815,15 @@ impl App {
                 self.screen = Screen::Downloads;
             }
             ConfirmAction::InstallTools => self.start_install(),
+            ConfirmAction::DeleteFile { id, name } => {
+                let service = self.service.clone();
+                self.spawn(async move {
+                    match service.delete_download(&id).await {
+                        Ok(existed) => Message::Deleted { id, name, existed },
+                        Err(error) => Message::Problem(error.to_string()),
+                    }
+                });
+            }
         }
     }
 
@@ -1249,6 +1279,32 @@ impl App {
                             Err(error) => Message::Problem(error.to_string()),
                         }
                     });
+                }
+            }
+            KeyCode::Char('D') if job.status == JobStatus::Completed => {
+                let Some(path) = job.output_path.as_deref().map(std::path::Path::new) else {
+                    return;
+                };
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                let folder = path
+                    .parent()
+                    .map(|folder| folder.display().to_string())
+                    .unwrap_or_default();
+                self.ask(
+                    "Delete the file from disk?",
+                    format!(
+                        "{name} will be permanently deleted from {folder} and removed from the list. This can't be undone."
+                    ),
+                    "Delete file",
+                    "Keep",
+                    ConfirmAction::DeleteFile { id, name },
+                );
+                // A destructive choice starts on the safe button.
+                if let Some(confirm) = self.confirm.as_mut() {
+                    confirm.confirm_focused = false;
                 }
             }
             KeyCode::Char(action @ ('o' | 'f')) if job.status == JobStatus::Completed => {

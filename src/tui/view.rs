@@ -577,6 +577,9 @@ fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App, h
     if !job.status.is_running() {
         actions.push(("Remove", 'd'));
     }
+    if job.status == JobStatus::Completed && job.output_path.is_some() {
+        actions.push(("Delete file", 'D'));
+    }
     let mut row: Vec<Span> = Vec::new();
     let mut used = 0;
     for (label, key) in actions {
@@ -1111,7 +1114,11 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
             ("1–4, Tab", "All, Downloading, Completed, Stopped"),
             ("c", "Cancel a running or waiting download"),
             ("r", "Retry a stopped download"),
-            ("d", "Remove from the list (never deletes files)"),
+            ("d", "Remove from the list (keeps the file)"),
+            (
+                "D",
+                "Delete a completed download's file from disk (asks first)",
+            ),
             ("o / f", "Open the file / show it in its folder"),
             ("y", "Copy the source link"),
             ("Y", "Copy the technical details, for a bug report"),

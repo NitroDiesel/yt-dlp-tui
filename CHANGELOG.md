@@ -4,6 +4,10 @@ Each release's section here becomes its GitHub release notes.
 
 ## v0.2.3
 
+### Delete a download's file
+
+- Completed downloads have a **Delete file** button (or press `Shift+D`) that permanently deletes the downloaded file from disk and removes it from the list. It asks first, and the question starts on **Keep**. **Remove** still only takes a download off the list and keeps the file.
+
 ### Fixed
 
 - A failed GPU conversion now says "GPU conversion failed" and names the encoder, instead of claiming the download engine couldn't start. The original download is kept, as before.

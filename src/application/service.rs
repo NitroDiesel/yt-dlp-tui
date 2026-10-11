@@ -611,6 +611,33 @@ impl AppService {
         self.db.remove_job(id).await
     }
 
+    /// Deletes a completed download's file from disk, then removes the
+    /// download from the list. The file is re-validated inside the job's
+    /// destination first, as for open and reveal. Returns false when the
+    /// file was already gone; the download is still removed from the list.
+    pub async fn delete_download(&self, id: &str) -> AppResult<bool> {
+        let job = self.db.job(id).await?;
+        if job.status != JobStatus::Completed {
+            return Err(AppError::Validation(
+                "Only completed downloads have a file to delete".into(),
+            ));
+        }
+        let output = job
+            .output_path
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::Validation("This download has no recorded file".into()))?;
+        let deleted = match tokio::fs::symlink_metadata(&output).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            _ => {
+                let path = validate_downloaded_file(&job.request.destination, &output).await?;
+                tokio::fs::remove_file(&path).await?;
+                true
+            }
+        };
+        self.db.remove_job(id).await?;
+        Ok(deleted)
+    }
+
     pub async fn clear_completed(&self) -> AppResult<()> {
         self.db.clear_completed().await
     }
@@ -1013,10 +1040,12 @@ async fn restore_last_download_directory(settings: &mut AppSettings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        EMIT_INTERVAL, JobPublisher, PERSIST_INTERVAL, cached_or_load,
+        AppService, EMIT_INTERVAL, JobPublisher, PERSIST_INTERVAL, cached_or_load,
         restore_last_download_directory, validate_downloaded_file, validate_settings,
     };
-    use crate::domain::{AppSettings, JobStatus};
+    use crate::domain::{
+        AppSettings, DownloadJob, DownloadOptions, DownloadProgress, DownloadRequest, JobStatus,
+    };
     use std::{fs, time::Duration};
     use tokio::{sync::RwLock, time::Instant};
 
@@ -1115,6 +1144,89 @@ mod tests {
             .unwrap();
 
         assert_eq!(validated, output.canonicalize().unwrap());
+    }
+
+    /// A service on a temp folder with one completed download whose
+    /// recorded file is `output`.
+    async fn service_with_download(
+        root: &std::path::Path,
+        destination: &std::path::Path,
+        output: &std::path::Path,
+    ) -> std::sync::Arc<AppService> {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let service = AppService::new(root.join("data"), root.join("tools"), events)
+            .await
+            .unwrap();
+        let job = DownloadJob {
+            id: "done".into(),
+            request: DownloadRequest {
+                url: "https://example.test/video".into(),
+                destination: destination.to_string_lossy().into_owned(),
+                filename_template: "%(title)s.%(ext)s".into(),
+                is_playlist: false,
+                options: DownloadOptions::default(),
+            },
+            title: Some("Video".into()),
+            status: JobStatus::Completed,
+            progress: DownloadProgress::default(),
+            created_at: "2026-10-11T12:00:00Z".into(),
+            started_at: None,
+            finished_at: None,
+            output_path: Some(output.to_string_lossy().into_owned()),
+            error_category: None,
+            error_message: None,
+            diagnostics: vec![],
+        };
+        service.db.insert_job(&job, 0).await.unwrap();
+        service
+    }
+
+    async fn listed(service: &AppService) -> bool {
+        let (queue, history) = service.jobs().await.unwrap();
+        queue.iter().chain(&history).any(|job| job.id == "done")
+    }
+
+    #[tokio::test]
+    async fn deleting_a_download_removes_its_file_and_its_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("downloads");
+        fs::create_dir(&destination).unwrap();
+        let output = destination.join("video.mp4");
+        fs::write(&output, b"media").unwrap();
+        let neighbour = destination.join("other.mp4");
+        fs::write(&neighbour, b"other").unwrap();
+        let service = service_with_download(root.path(), &destination, &output).await;
+
+        assert!(service.delete_download("done").await.unwrap());
+        assert!(!output.exists());
+        assert!(neighbour.exists(), "only the download's own file goes");
+        assert!(!listed(&service).await);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_download_whose_file_is_gone_still_removes_the_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("downloads");
+        fs::create_dir(&destination).unwrap();
+        let output = destination.join("moved-away.mp4");
+        let service = service_with_download(root.path(), &destination, &output).await;
+
+        assert!(!service.delete_download("done").await.unwrap());
+        assert!(!listed(&service).await);
+    }
+
+    #[tokio::test]
+    async fn never_deletes_a_file_outside_the_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("downloads");
+        fs::create_dir(&destination).unwrap();
+        let outside = root.path().join("private.txt");
+        fs::write(&outside, b"private").unwrap();
+        let service = service_with_download(root.path(), &destination, &outside).await;
+
+        assert!(service.delete_download("done").await.is_err());
+        assert!(outside.exists());
+        assert!(listed(&service).await, "the entry stays");
     }
 
     #[tokio::test]

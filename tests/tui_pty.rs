@@ -399,6 +399,42 @@ fn copies_the_technical_details_of_a_failed_download() {
 }
 
 #[test]
+fn deletes_a_downloaded_file_only_after_confirming() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    session.send("\x1b[200~https://example.test/video\x1b[201~");
+    session.wait_for("Add to queue");
+    session.send("\x04");
+    session.wait_for("Completed 1  Stopped");
+    let saved = home.path().join("Downloads").join("Fixture media.webm");
+    assert!(saved.is_file());
+
+    // Remove only takes it off the list, so it is a separate button.
+    session.wait_for("[ Remove ]");
+    session.click("Delete file");
+    session.wait_for("Delete the file from disk?");
+    session.wait_for("permanently deleted");
+    session.snapshot("Delete confirmation");
+    // Enter on the button that starts focused keeps the file.
+    session.send("\r");
+    session.wait_until_gone("Delete the file from disk?");
+    assert!(saved.is_file(), "Keep is the default");
+
+    session.send("D");
+    session.wait_for("Delete the file from disk?");
+    session.send("\t");
+    session.send("\r");
+    session.wait_for("Deleted Fixture media.webm");
+    assert!(!saved.exists(), "the file is deleted");
+    session.wait_for("Paste a link to start");
+
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
 fn a_fresh_machine_sets_up_its_own_engine_and_ignores_yt_dlp_on_path() {
     let home = tempfile::tempdir().unwrap();
     let empty_tools = tempfile::tempdir().unwrap();

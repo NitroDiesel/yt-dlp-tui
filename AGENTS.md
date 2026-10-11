@@ -6,7 +6,7 @@ Start here for coding-agent work in this repository.
 
 - `docs/PROJECT_CONTEXT.md`: read first in every session, before searching the code. It covers the module map, how a download flows, recipes for common changes, and the gotchas behind past decisions.
 - `README.md`: capabilities, keys, supported platforms, and the checks to run.
-- `docs/ARCHITECTURE.md`: before changing the event loop, process execution, persistence, tool resolution, the installer, mouse handling, or open/reveal.
+- `docs/ARCHITECTURE.md`: before changing the event loop, process execution, persistence, tool resolution, the installer, mouse handling, or open/reveal/delete.
 - `docs/CAPABILITY_AUDIT.md`: before changing yt-dlp option coverage or the pinned versions.
 - `docs/RELEASING.md`: before changing versions, tags, the changelog, packaging, or the release workflow.
 
@@ -24,7 +24,7 @@ yt-dlp TUI is the terminal counterpart of [yt-dlp Desktop](https://github.com/Ni
 - Clicks replay the key that does the same action (`Click::Key`), so mouse and keyboard behave identically.
 - Tool pins live in `packaging/components.json`, with sizes and SHA-256 digests independently verified against each publisher's checksum file. Downloaded tools stay out of the repository.
 - SQLite migrations are append-only once released. New stored fields need serde defaults.
-- Open and reveal take a job id and re-validate its file inside the destination.
+- Open, reveal, and delete file take a job id and re-validate its file inside the destination. Remove never touches files; only Delete file does, after a confirmation that starts on Keep.
 
 ## Completion criteria
 

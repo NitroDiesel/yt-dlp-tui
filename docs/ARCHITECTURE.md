@@ -61,6 +61,6 @@ The database lives in the platform data folder (or `YT_DLP_TUI_DATA_DIR`). An ex
 - Links must be http(s) without embedded credentials. Proxy URLs with credentials are rejected so secrets are not stored.
 - Cookie files are referenced by path and never copied. Browser cookies are read by yt-dlp itself.
 - Diagnostics from both output streams are bounded and redact URL credentials, query secrets, authorization and cookie headers, and the home folder.
-- Open and reveal accept a job id, re-validate that its file is inside the job's destination, and only then call the platform opener.
+- Open and reveal accept a job id, re-validate that its file is inside the job's destination, and only then call the platform opener. Delete file (`AppService::delete_download`) does the same validation before removing the file, deletes only the recorded file (subtitles or thumbnails beside it stay), and its confirmation starts focused on Keep.
 - Tool downloads are pinned to exact URLs, sizes, and SHA-256 digests compiled into the app. A mismatch installs nothing. Only named archive entries are extracted, to fixed names, so archive paths never choose where files land. Nothing downloaded is executed during installation.
 - There is no free-text argument box. Every yt-dlp feature is a typed control with validation.
