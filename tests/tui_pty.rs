@@ -296,6 +296,38 @@ fn saves_settings_that_survive_a_restart() {
 }
 
 #[test]
+fn offers_mov_and_avi_file_types_and_explains_the_conversion() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+
+    session.send("\x1b[200~https://example.test/video\x1b[201~");
+    session.wait_for("Add to queue");
+    session.wait_for("Automatic, whatever the site provides");
+    // Kind, Quality, then File type: Automatic, MP4, MKV, MOV.
+    session.send(DOWN);
+    session.send(DOWN);
+    for _ in 0..3 {
+        session.send(RIGHT);
+    }
+    session.wait_for("MOV, for Apple apps and video editors");
+    session.wait_for("Streams MOV can't hold are re-encoded");
+    session.snapshot("MOV file type");
+    session.send(RIGHT);
+    session.wait_for("AVI, for older players");
+    session.wait_for("Re-encoded to Xvid video and MP3 audio");
+
+    // Converting needs FFmpeg, which this machine hasn't installed yet.
+    session.send("\x04");
+    session.wait_for("FFmpeg is required");
+    session.send("\x1b");
+    session.wait_until_gone("Re-encoded to Xvid");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
 fn confirms_whole_playlists_and_offers_current_sponsorblock_segments() {
     let home = tempfile::tempdir().unwrap();
     let tools = fake_tools();
@@ -305,7 +337,7 @@ fn confirms_whole_playlists_and_offers_current_sponsorblock_segments() {
     session.send("\x1b[200~https://example.test/video\x1b[201~");
     session.wait_for("Add to queue");
     session.wait_for("Show advanced options");
-    // Kind, Quality, Container, Video codec, Clip, Save to, Advanced.
+    // Kind, Quality, File type, Video codec, Clip, Save to, Advanced.
     for _ in 0..6 {
         session.send(DOWN);
     }

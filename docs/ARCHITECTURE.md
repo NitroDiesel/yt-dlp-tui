@@ -22,7 +22,8 @@ AppService ─────────── queue scheduler (1–4 at a time)
 - `domain`: serialized contracts, the job state machine, settings, tool and GPU metadata.
 - `application`: startup, the persistent queue scheduler, recovery, shutdown, and job events.
 - `integration/yt_dlp`: typed argument construction, analysis, the progress protocol, redaction, and the child-process lifecycle.
-- `integration/ffmpeg`: runtime NVENC/AMF probes and the non-destructive GPU conversion stage.
+- `integration/ffmpeg`: runtime NVENC/AMF probes, the non-destructive GPU conversion stage, and `run_ffmpeg`, which runs any FFmpeg job with progress, diagnostics, and cancellation.
+- `integration/container`: converts a finished download into MOV, AVI, or WebM, copying the streams the container holds and re-encoding the rest.
 - `integration/dependencies`: resolves a custom executable first, then the managed tools folder. `PATH` is never searched.
 - `integration/installer`: downloads `packaging/components.json` pins, enforces each file's pinned size and SHA-256 while streaming, extracts only the named archive entries, and swaps a component in only after all of its files are ready.
 - `persistence`: migrations and SQLite queries.
@@ -48,6 +49,7 @@ Forms rebuild their rows from state on every frame, so controls appear exactly w
 5. Cancellation interrupts the process group, then kills it after two seconds.
 6. Output paths are accepted only from yt-dlp's `after_move` record and only inside the chosen destination.
 7. Optional GPU conversion writes a temporary MKV beside the source and removes the source only after the new file is finalized.
+8. For MOV, AVI, or WebM, each downloaded file (every playlist item, from the runner's `output_paths`) is re-validated inside the destination and converted the same non-destructive way into `name.<ext>`. This runs after GPU conversion, so the GPU codec must fit the chosen file type; enqueue refuses combinations that don't.
 
 Quitting asks first when downloads are running, then stops them through the same cancellation path but records them as *interrupted*, so Retry resumes from the partial file.
 

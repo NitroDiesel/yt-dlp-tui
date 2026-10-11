@@ -358,6 +358,8 @@ pub enum VideoContainer {
     Mp4,
     Mkv,
     Webm,
+    Mov,
+    Avi,
 }
 
 impl VideoContainer {
@@ -366,6 +368,36 @@ impl VideoContainer {
             Self::Mp4 => "mp4",
             Self::Mkv => "mkv",
             Self::Webm => "webm",
+            Self::Mov => "mov",
+            Self::Avi => "avi",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mp4 => "MP4",
+            Self::Mkv => "MKV",
+            Self::Webm => "WebM",
+            Self::Mov => "MOV",
+            Self::Avi => "AVI",
+        }
+    }
+
+    /// MP4 and MKV hold every codec yt-dlp downloads, so yt-dlp remuxes into
+    /// them. WebM, MOV, and AVI each accept only some codecs, so the app
+    /// converts the finished download itself, re-encoding only what doesn't fit.
+    pub fn converted_by_app(self) -> bool {
+        matches!(self, Self::Webm | Self::Mov | Self::Avi)
+    }
+
+    /// Whether video the GPU encoded as `codec` can be copied into this
+    /// container. AVI always re-encodes to Xvid, so GPU encoding is wasted.
+    pub fn holds(self, codec: &HardwareCodec) -> bool {
+        match self {
+            Self::Mp4 | Self::Mkv => true,
+            Self::Webm => *codec == HardwareCodec::Av1,
+            Self::Mov => *codec != HardwareCodec::Av1,
+            Self::Avi => false,
         }
     }
 }

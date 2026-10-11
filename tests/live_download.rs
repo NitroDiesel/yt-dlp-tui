@@ -13,7 +13,7 @@ use yt_dlp_tui::{
     application::{AppService, ServiceEvent},
     domain::{
         AudioFormat, ClipOptions, DownloadJob, DownloadOptions, DownloadRequest, JobStatus,
-        MediaMode, SponsorBlockMode, SponsorBlockOptions, SponsorCategory,
+        MediaMode, SponsorBlockMode, SponsorBlockOptions, SponsorCategory, VideoContainer,
     },
 };
 
@@ -175,4 +175,52 @@ async fn analyzes_and_downloads_with_the_pinned_engine() {
         audio.error_message
     );
     assert!(audio.output_path.unwrap().ends_with(".mp3"));
+
+    // MOV takes YouTube's H.264 and AAC as they are; AVI re-encodes them.
+    for container in [VideoContainer::Mov, VideoContainer::Avi] {
+        let job = service
+            .enqueue(
+                request(DownloadOptions {
+                    quality: "720".into(),
+                    container: Some(container),
+                    ..DownloadOptions::default()
+                }),
+                true,
+                Some(probe.title.clone()),
+            )
+            .await
+            .unwrap();
+        let (job, stages, _) = finish(&mut events, &job.id).await;
+        println!(
+            "{} job: {:?} {:?} after {stages:?}",
+            container.label(),
+            job.status,
+            job.output_path
+        );
+        assert_eq!(
+            job.status,
+            JobStatus::Completed,
+            "{:?}\n{}",
+            job.error_message,
+            job.diagnostics.join("\n")
+        );
+        let converting = format!("Converting to {}", container.label());
+        assert!(stages.contains(&converting), "{stages:?}");
+        let output = PathBuf::from(job.output_path.unwrap());
+        assert_eq!(
+            output.extension().unwrap(),
+            container.as_str(),
+            "{output:?}"
+        );
+        assert!(output.metadata().unwrap().len() > 0);
+    }
+    // Each conversion replaced its download; only the clip and the MP3 remain.
+    let mut leftovers = std::fs::read_dir(destination.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.contains("(clip") && !name.ends_with(".mp3"))
+        .collect::<Vec<_>>();
+    leftovers.sort();
+    assert_eq!(leftovers.len(), 2, "{leftovers:?}");
+    assert!(leftovers[0].ends_with(".avi") && leftovers[1].ends_with(".mov"));
 }

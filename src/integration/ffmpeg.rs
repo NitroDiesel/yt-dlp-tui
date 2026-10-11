@@ -467,72 +467,19 @@ pub async fn run_hardware_conversion(
             "pipe:1",
             "-nostats",
         ])
-        .arg(&temporary_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    configure_grouped_background_process(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| AppError::Conversion(format!("FFmpeg could not be started: {error}")))?;
-    let pid = child
-        .id()
-        .ok_or_else(|| AppError::Conversion("FFmpeg has no process identifier".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::Conversion("FFmpeg progress output is unavailable".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| AppError::Conversion("FFmpeg diagnostic output is unavailable".into()))?;
+        .arg(&temporary_path);
     if let Some(note) = &decode_note {
         let _ = events.send(RunnerEvent::Diagnostic(note.clone()));
     }
-    let diagnostics = Arc::new(Mutex::new(decode_note.into_iter().collect::<Vec<_>>()));
-    let diagnostic_state = diagnostics.clone();
-    let diagnostic_events = events.clone();
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let line: String = redact(&line).chars().take(1000).collect();
-            let mut guard = diagnostic_state.lock().await;
-            if guard.len() >= 150 {
-                guard.remove(0);
-            }
-            guard.push(line.clone());
-            let _ = diagnostic_events.send(RunnerEvent::Diagnostic(line));
-        }
-    });
-    let progress_events = events.clone();
-    let conversion_stage = format!("{} GPU conversion", encoder.provider.label());
-    let stdout_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line == "progress=continue" {
-                let _ = progress_events.send(RunnerEvent::Progress(DownloadProgress {
-                    stage: Some(conversion_stage.clone()),
-                    ..DownloadProgress::default()
-                }));
-            }
-        }
-    });
-    let status = tokio::select! {
-        result = child.wait() => Some(result?),
-        _ = cancel.cancelled() => {
-            terminate_process_tree(pid, true).await;
-            sleep(Duration::from_secs(2)).await;
-            if child.try_wait()?.is_none() {
-                terminate_process_tree(pid, false).await;
-            }
-            let _ = child.wait().await;
-            None
-        }
-    };
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-    let captured = diagnostics.lock().await.clone();
+    let (status, captured) = run_ffmpeg(
+        command,
+        format!("{} GPU conversion", encoder.provider.label()),
+        None,
+        decode_note.into_iter().collect(),
+        cancel,
+        events,
+    )
+    .await?;
     match status {
         None => {
             let _ = tokio::fs::remove_file(&temporary_path).await;
@@ -563,6 +510,93 @@ pub async fn run_hardware_conversion(
             Err(conversion_failed(&encoder.provider, status))
         }
     }
+}
+
+/// Runs a prepared FFmpeg command that writes `-progress pipe:1` to stdout.
+/// Warnings are relayed as diagnostics and `stage` as
+/// progress, with a percentage when the input's duration is known. Returns
+/// `None` as the status when cancelled, after stopping the process tree.
+pub(crate) async fn run_ffmpeg(
+    mut command: Command,
+    stage: String,
+    duration_seconds: Option<f64>,
+    diagnostics: Vec<String>,
+    cancel: CancellationToken,
+    events: tokio::sync::mpsc::UnboundedSender<RunnerEvent>,
+) -> AppResult<(Option<std::process::ExitStatus>, Vec<String>)> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    configure_grouped_background_process(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| AppError::Conversion(format!("FFmpeg could not be started: {error}")))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| AppError::Conversion("FFmpeg has no process identifier".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Conversion("FFmpeg progress output is unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Conversion("FFmpeg diagnostic output is unavailable".into()))?;
+    let diagnostics = Arc::new(Mutex::new(diagnostics));
+    let diagnostic_state = diagnostics.clone();
+    let diagnostic_events = events.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line: String = redact(&line).chars().take(1000).collect();
+            let mut guard = diagnostic_state.lock().await;
+            if guard.len() >= 150 {
+                guard.remove(0);
+            }
+            guard.push(line.clone());
+            let _ = diagnostic_events.send(RunnerEvent::Diagnostic(line));
+        }
+    });
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut percent = None;
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(done) = progress_percent(&line, duration_seconds) {
+                percent = Some(done);
+            } else if line == "progress=continue" {
+                let _ = events.send(RunnerEvent::Progress(DownloadProgress {
+                    stage: Some(stage.clone()),
+                    percent,
+                    ..DownloadProgress::default()
+                }));
+            }
+        }
+    });
+    let status = tokio::select! {
+        result = child.wait() => Some(result?),
+        _ = cancel.cancelled() => {
+            terminate_process_tree(pid, true).await;
+            sleep(Duration::from_secs(2)).await;
+            if child.try_wait()?.is_none() {
+                terminate_process_tree(pid, false).await;
+            }
+            let _ = child.wait().await;
+            None
+        }
+    };
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    let captured = diagnostics.lock().await.clone();
+    Ok((status, captured))
+}
+
+/// Percentage done from an FFmpeg `-progress` line, given the input duration.
+fn progress_percent(line: &str, duration_seconds: Option<f64>) -> Option<f64> {
+    let duration = duration_seconds.filter(|duration| *duration > 0.0)?;
+    let micros = line.strip_prefix("out_time_us=")?.parse::<f64>().ok()?;
+    Some((micros / 1_000_000.0 / duration * 100.0).clamp(0.0, 100.0))
 }
 
 fn conversion_failed(

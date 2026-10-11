@@ -29,6 +29,8 @@ pub enum RunnerEvent {
 pub struct RunnerOutcome {
     pub cancelled: bool,
     pub output_path: Option<String>,
+    /// Every file yt-dlp reported, in order; a playlist has one per item.
+    pub output_paths: Vec<String>,
     pub title: Option<String>,
     pub diagnostics: Vec<String>,
     pub error: Option<String>,
@@ -82,6 +84,7 @@ pub async fn run_download(
             return Ok(RunnerOutcome {
                 cancelled: true,
                 output_path: guard.output_path.clone(),
+                output_paths: guard.output_paths.clone(),
                 title: guard.title.clone(),
                 diagnostics: guard.diagnostics.clone(),
                 error: None,
@@ -99,6 +102,7 @@ pub async fn run_download(
     Ok(RunnerOutcome {
         cancelled: false,
         output_path: guard.output_path.clone(),
+        output_paths: guard.output_paths.clone(),
         title: guard.title.clone(),
         diagnostics: guard.diagnostics.clone(),
         error,
@@ -122,6 +126,9 @@ async fn read_lines(
             Ok(Some(ProtocolEvent::AfterMove { filepath, title })) => {
                 let mut guard = state.lock().await;
                 guard.output_path = Some(filepath.clone());
+                if !guard.output_paths.contains(&filepath) {
+                    guard.output_paths.push(filepath.clone());
+                }
                 guard.title = title.clone();
                 let _ = events.send(RunnerEvent::Output {
                     path: filepath,
@@ -139,6 +146,7 @@ async fn read_lines(
 #[derive(Default)]
 struct OutcomeState {
     output_path: Option<String>,
+    output_paths: Vec<String>,
     title: Option<String>,
     diagnostics: Vec<String>,
     bytes: usize,

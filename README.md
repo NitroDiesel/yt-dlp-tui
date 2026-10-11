@@ -7,7 +7,7 @@ A keyboard-driven terminal interface for [yt-dlp](https://github.com/yt-dlp/yt-d
 ## What it does
 
 - Analyzes a video, playlist, or channel link before downloading, and starts a new download when you paste a link anywhere.
-- Offers video or audio, quality, container, codec preference, audio format and bitrate, exact stream picking, and audio track language.
+- Offers video or audio, quality, file type (MP4, MKV, MOV, AVI, or WebM), codec preference, audio format and bitrate, exact stream picking, and audio track language.
 - Exposes yt-dlp features as form controls: subtitles and automatic captions, subtitle conversion, chapters, SponsorBlock (including the `hook`, highlight, and community chapter segments in yt-dlp 2026.08.19), thumbnails and side files, filename presets, parallel connections, playlist ranges, date windows, size and length filters, item limits, Referer and User-Agent headers.
 - Downloads only a selected timeframe, with an accurate or a fast keyframe cut. Clips are named after their range so they never shadow the full video.
 - Detects NVIDIA NVENC and AMD AMF at runtime and can re-encode a finished video on the GPU.
@@ -88,7 +88,7 @@ export YT_DLP_TUI_LIVE_TOOLS="$(cargo run -q -- paths | sed -n 's/^Tools: //p')"
 cargo test --test live_download --test tui_pty -- --ignored --skip a_fresh_machine --nocapture
 ```
 
-On a machine with an NVIDIA or AMD GPU, `cargo test --test gpu_conversion -- --ignored --nocapture` (with the same variable) checks GPU conversion of an AV1 video.
+`cargo test --test container_conversion -- --ignored --nocapture` (with the same variable, no network) converts generated clips into MOV, AVI, and WebM. On a machine with an NVIDIA or AMD GPU, `cargo test --test gpu_conversion -- --ignored --nocapture` checks GPU conversion of an AV1 video.
 
 - [Architecture and security decisions](docs/ARCHITECTURE.md)
 - [Audited yt-dlp capability mapping](docs/CAPABILITY_AUDIT.md)

@@ -2,6 +2,14 @@
 
 Each release's section here becomes its GitHub release notes.
 
+## v0.2.4
+
+### Choose the video file type
+
+- The New download form's **File type** (formerly Container) now offers **MOV** and **AVI** as well as MP4, MKV, and WebM. MP4 and MKV work as before. MOV, AVI, and WebM are converted after the download: streams the file type can hold are copied as is, and only the rest are re-encoded, so YouTube videos saved as MOV usually need no re-encoding at all. AVI is always re-encoded to Xvid video and MP3 audio for older players. Every item of a playlist is converted, and the original is kept if a conversion fails.
+- WebM no longer fails for sources that only offer H.264; the video is re-encoded to VP9 instead.
+- GPU conversion now combines with a file type only when that type can hold the GPU's codec (for example, not GPU AV1 in MOV); the form says so.
+
 ## v0.2.3
 
 ### Delete a download's file

@@ -5,7 +5,7 @@ use url::Url;
 use crate::{
     domain::{
         AppSettings, AudioFormat, AudioQuality, DownloadOptions, DownloadRequest, IpVersion,
-        MediaMode, PlaylistOrder, SponsorBlockMode,
+        MediaMode, PlaylistOrder, SponsorBlockMode, VideoContainer,
     },
     error::{AppError, AppResult},
 };
@@ -416,17 +416,25 @@ pub fn build_download_args(
         }
     }
     if options.mode != MediaMode::Audio {
-        if let Some(container) = options.container {
+        match options.container {
+            // The app converts these itself after the download (see
+            // `integration::container`), so yt-dlp keeps its own choice here.
+            Some(container) if container.converted_by_app() => {}
             // Merged downloads use the container directly; single files are remuxed.
-            args.extend([
+            Some(container) => args.extend([
                 "--merge-output-format".into(),
                 container.as_str().into(),
                 "--remux-video".into(),
                 container.as_str().into(),
-            ]);
+            ]),
+            None => {}
         }
         if let Some(codec) = options.codec_preference {
             args.extend(["-S".into(), codec.sort_key().into()]);
+        } else if options.container == Some(VideoContainer::Mov) {
+            // At equal resolution, take the H.264 and AAC streams MOV can hold,
+            // so the conversion copies them instead of re-encoding.
+            args.extend(["-S".into(), "res,vcodec:avc,acodec:aac".into()]);
         }
     }
 
@@ -890,6 +898,35 @@ mod tests {
         }
         assert!(args.iter().any(|argument| argument == "--embed-chapters"));
         assert!(needs_ffmpeg(&value.options));
+    }
+
+    #[test]
+    fn leaves_mov_avi_and_webm_to_the_app_and_prefers_streams_mov_can_copy() {
+        for container in [
+            VideoContainer::Mov,
+            VideoContainer::Avi,
+            VideoContainer::Webm,
+        ] {
+            let mut value = request();
+            value.options.container = Some(container);
+            let args = args_of(&value);
+            for flag in ["--merge-output-format", "--remux-video", "--recode-video"] {
+                assert!(!args.iter().any(|argument| argument == flag), "{flag}");
+            }
+            assert!(needs_ffmpeg(&value.options));
+            assert_eq!(
+                has_pair(&args, ["-S", "res,vcodec:avc,acodec:aac"]),
+                container == VideoContainer::Mov
+            );
+        }
+
+        // A codec the user chose wins over the MOV preference.
+        let mut value = request();
+        value.options.container = Some(VideoContainer::Mov);
+        value.options.codec_preference = Some(CodecPreference::Av1);
+        let args = args_of(&value);
+        assert!(has_pair(&args, ["-S", "vcodec:av01"]));
+        assert_eq!(args.iter().filter(|argument| *argument == "-S").count(), 1);
     }
 
     #[test]

@@ -24,7 +24,8 @@ Audited against yt-dlp **2026.08.19**, the latest stable release, which `packagi
 | Up to Np, with FFmpeg | `-f bv*[height<=N]+ba/b[height<=N] / wv*+ba/w` |
 | Best single file, or no FFmpeg | `-f b` (capped: `b[height<=N] / b`) |
 | Pick exact streams | `-f <video>+<audio>` from the analyzed formats |
-| Container | `--merge-output-format <c> --remux-video <c>` (video only) |
+| File type MP4, MKV | `--merge-output-format <c> --remux-video <c>` (video only) |
+| File type MOV, AVI, WebM | No yt-dlp flag; MOV adds `-S res,vcodec:avc,acodec:aac` unless a codec was chosen. After the download, FFprobe lists the streams and FFmpeg copies those the container holds and re-encodes the rest (MOV: x264/AAC, AVI: Xvid/MP3 always, WebM: VP9/Opus), for every playlist item |
 | Video codec, Download as | `-S vcodec:avc\|vp9\|av01` |
 | Video codec, Convert on GPU | FFmpeg after download with the first working NVENC or AMF encoder; quality 1–51; optional GPU decode, used only when the GPU decodes that input (checked on one frame), otherwise the CPU decodes |
 | Audio, original | `-f ba` |

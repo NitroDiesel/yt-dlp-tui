@@ -22,16 +22,19 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        AppSettings, AppSnapshot, DependencyInfo, DownloadJob, DownloadProgress, DownloadRequest,
-        HardwareAccelerationInfo, JobStatus, MediaMode, MediaProbe, VideoConversionOptions,
+        AppSettings, AppSnapshot, DependencyInfo, DownloadJob, DownloadOptions, DownloadProgress,
+        DownloadRequest, HardwareAccelerationInfo, JobStatus, MediaMode, MediaProbe,
+        VideoContainer, VideoConversionOptions,
     },
     error::{AppError, AppResult},
     integration::{
+        container::{already_in, run_container_conversion},
         dependencies::DependencyManager,
         ffmpeg::run_hardware_conversion,
         installer::{self, InstallProgress},
         yt_dlp::{
-            RunnerEvent, build_download_args, needs_ffmpeg, network_args, probe, run_download,
+            RunnerEvent, RunnerOutcome, build_download_args, needs_ffmpeg, network_args, probe,
+            run_download,
         },
     },
     persistence::Database,
@@ -277,9 +280,22 @@ impl AppService {
         title: Option<String>,
     ) -> AppResult<DownloadJob> {
         let settings = self.effective_settings().await;
+        validate_container(&request.options)?;
         if needs_ffmpeg(&request.options) && settings.ffmpeg_path.is_none() {
             return Err(AppError::DependencyMissing(
                 "FFmpeg is required for the selected conversion, clip, chapters, SponsorBlock, or subtitle options. Turn them off or install the pinned tools in Settings.".into(),
+            ));
+        }
+        if request.options.mode != MediaMode::Audio
+            && request
+                .options
+                .container
+                .is_some_and(VideoContainer::converted_by_app)
+            && self.dependencies.resolve_ffprobe(&settings).is_none()
+        {
+            return Err(AppError::DependencyMissing(
+                "FFprobe is required to convert to this file type. Install the pinned tools in Settings."
+                    .into(),
             ));
         }
         if let Some(conversion) = request.options.video_conversion.as_ref() {
@@ -522,6 +538,18 @@ impl AppService {
                     ));
                 }
             }
+        }
+        if let Ok(outcome) = &mut result
+            && let Some(container) = job.request.options.container
+            && container.converted_by_app()
+            && job.request.options.mode != MediaMode::Audio
+            && !outcome.cancelled
+            && outcome.error.is_none()
+            && let Err(error) = self
+                .convert_container(&mut job, outcome, container, &settings, &cancel)
+                .await
+        {
+            result = Err(error);
         }
         let shutting_down = self.shutting_down.load(Ordering::SeqCst);
         match result {
@@ -780,6 +808,80 @@ impl AppService {
 
     /// Feeds runner events into `job`, persisting and emitting at a bounded rate.
     /// `apply` returns true for events that must reach the interface immediately.
+    /// Converts each downloaded file into `container` (every item of a
+    /// playlist), and points the outcome at the converted files.
+    async fn convert_container(
+        &self,
+        job: &mut DownloadJob,
+        outcome: &mut RunnerOutcome,
+        container: VideoContainer,
+        settings: &AppSettings,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        let (Some(ffmpeg), Some(ffprobe)) = (
+            self.dependencies.resolve_ffmpeg(settings),
+            self.dependencies.resolve_ffprobe(settings),
+        ) else {
+            return Err(AppError::DependencyMissing(format!(
+                "FFmpeg and FFprobe are required to convert to {}",
+                container.label()
+            )));
+        };
+        let files = if job.request.is_playlist {
+            outcome.output_paths.clone()
+        } else {
+            outcome.output_path.clone().into_iter().collect()
+        };
+        let mut converted_paths = Vec::with_capacity(files.len());
+        for file in files {
+            let input =
+                validate_downloaded_file(&job.request.destination, &PathBuf::from(&file)).await?;
+            if already_in(&input, container) {
+                converted_paths.push(input.to_string_lossy().into_owned());
+                continue;
+            }
+            job.status = JobStatus::PostProcessing;
+            job.progress.stage = Some(format!("Converting to {}", container.label()));
+            job.progress.percent = Some(0.0);
+            let _ = self.db.update_job(job).await;
+            self.emit(job);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let converter = tokio::spawn({
+                let (ffmpeg, ffprobe, cancel) = (ffmpeg.clone(), ffprobe.clone(), cancel.clone());
+                async move {
+                    run_container_conversion(&ffmpeg, &ffprobe, &input, container, cancel, tx).await
+                }
+            });
+            self.relay_events(job, &mut rx, |job, event| {
+                match event {
+                    RunnerEvent::Progress(progress) => {
+                        job.progress.stage = progress.stage;
+                        job.progress.percent = progress.percent;
+                        job.status = JobStatus::PostProcessing;
+                    }
+                    RunnerEvent::Diagnostic(line) => push_diagnostic(job, line),
+                    RunnerEvent::Output { .. } | RunnerEvent::PostProcess(_) => {}
+                }
+                false
+            })
+            .await;
+            let converted = converter
+                .await
+                .map_err(|error| AppError::Conversion(error.to_string()))??;
+            outcome.diagnostics.extend(converted.diagnostics);
+            if converted.cancelled {
+                outcome.cancelled = true;
+                return Ok(());
+            }
+            converted_paths.push(converted.output_path.to_string_lossy().into_owned());
+        }
+        if let Some(last) = converted_paths.last() {
+            outcome.output_path = Some(last.clone());
+        }
+        outcome.output_paths = converted_paths;
+        Ok(())
+    }
+
     async fn relay_events(
         &self,
         job: &mut DownloadJob,
@@ -859,6 +961,23 @@ pub(crate) async fn validate_downloaded_file(
         ));
     }
     Ok(output)
+}
+
+/// Rejects a GPU codec the chosen file type can't hold, which would mean
+/// encoding the video twice.
+fn validate_container(options: &DownloadOptions) -> AppResult<()> {
+    if options.mode != MediaMode::Audio
+        && let (Some(container), Some(conversion)) =
+            (options.container, options.video_conversion.as_ref())
+        && !container.holds(&conversion.codec)
+    {
+        return Err(AppError::Validation(format!(
+            "{} files can't hold GPU {} video. Choose another file type or GPU codec, or turn off GPU conversion.",
+            container.label(),
+            conversion.codec.label()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_video_conversion(conversion: &VideoConversionOptions) -> AppResult<()> {
@@ -1041,10 +1160,12 @@ async fn restore_last_download_directory(settings: &mut AppSettings) -> bool {
 mod tests {
     use super::{
         AppService, EMIT_INTERVAL, JobPublisher, PERSIST_INTERVAL, cached_or_load,
-        restore_last_download_directory, validate_downloaded_file, validate_settings,
+        restore_last_download_directory, validate_container, validate_downloaded_file,
+        validate_settings,
     };
     use crate::domain::{
-        AppSettings, DownloadJob, DownloadOptions, DownloadProgress, DownloadRequest, JobStatus,
+        AppSettings, DownloadJob, DownloadOptions, DownloadProgress, DownloadRequest,
+        HardwareCodec, JobStatus, MediaMode, VideoContainer, VideoConversionOptions,
     };
     use std::{fs, time::Duration};
     use tokio::{sync::RwLock, time::Instant};
@@ -1227,6 +1348,47 @@ mod tests {
         assert!(service.delete_download("done").await.is_err());
         assert!(outside.exists());
         assert!(listed(&service).await, "the entry stays");
+    }
+
+    #[test]
+    fn refuses_gpu_codecs_the_file_type_cannot_hold() {
+        let options = |container, codec| DownloadOptions {
+            container: Some(container),
+            video_conversion: Some(VideoConversionOptions {
+                codec,
+                quality: 23,
+                use_hardware_decode: false,
+            }),
+            ..DownloadOptions::default()
+        };
+        for (container, codec, fits) in [
+            (VideoContainer::Mov, HardwareCodec::H264, true),
+            (VideoContainer::Mov, HardwareCodec::Hevc, true),
+            (VideoContainer::Mov, HardwareCodec::Av1, false),
+            (VideoContainer::Webm, HardwareCodec::Av1, true),
+            (VideoContainer::Webm, HardwareCodec::H264, false),
+            (VideoContainer::Avi, HardwareCodec::H264, false),
+            (VideoContainer::Mkv, HardwareCodec::Av1, true),
+        ] {
+            assert_eq!(
+                validate_container(&options(container, codec)).is_ok(),
+                fits,
+                "{container:?} {codec:?}"
+            );
+        }
+        let error = validate_container(&options(VideoContainer::Avi, HardwareCodec::H264))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("AVI files can't hold GPU H.264 video"),
+            "{error}"
+        );
+
+        let audio = DownloadOptions {
+            mode: MediaMode::Audio,
+            ..options(VideoContainer::Avi, HardwareCodec::H264)
+        };
+        assert!(validate_container(&audio).is_ok(), "audio ignores both");
     }
 
     #[tokio::test]

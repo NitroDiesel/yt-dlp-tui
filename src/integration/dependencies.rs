@@ -74,6 +74,13 @@ impl DependencyManager {
         self.resolve(settings.ffmpeg_path.as_deref(), executable_name("ffmpeg"))
     }
 
+    pub fn resolve_ffprobe(&self, settings: &AppSettings) -> Option<PathBuf> {
+        self.resolve(
+            custom_ffprobe(settings).as_deref(),
+            executable_name("ffprobe"),
+        )
+    }
+
     pub async fn inspect_hardware_acceleration(
         &self,
         settings: &AppSettings,

@@ -1,3 +1,4 @@
+pub mod container;
 pub mod dependencies;
 pub mod ffmpeg;
 pub mod installer;

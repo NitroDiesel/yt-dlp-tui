@@ -53,11 +53,16 @@ const AUDIO_QUALITIES: [(AudioQuality, &str); 5] = [
     (AudioQuality::Kbps128, "128 kbps"),
 ];
 
-const CONTAINERS: [(Option<VideoContainer>, &str); 4] = [
-    (None, "Automatic"),
+const CONTAINERS: [(Option<VideoContainer>, &str); 6] = [
+    (None, "Automatic, whatever the site provides"),
     (Some(VideoContainer::Mp4), "MP4, plays on most devices"),
     (Some(VideoContainer::Mkv), "MKV, keeps every stream"),
-    (Some(VideoContainer::Webm), "WebM"),
+    (
+        Some(VideoContainer::Mov),
+        "MOV, for Apple apps and video editors",
+    ),
+    (Some(VideoContainer::Avi), "AVI, for older players"),
+    (Some(VideoContainer::Webm), "WebM, for web browsers"),
 ];
 
 const CODECS: [(Option<CodecPreference>, &str); 4] = [
@@ -1079,11 +1084,38 @@ impl NewDownload {
             .iter()
             .position(|(value, _)| *value == self.options.container)
             .unwrap_or(0);
-        rows.push(Row::new(
+        let mut container_row = Row::new(
             Field::Container,
-            "Container",
+            "File type",
             choices(&CONTAINERS.map(|(_, label)| label), container),
-        ));
+        );
+        let gpu_codec = self
+            .options
+            .video_conversion
+            .as_ref()
+            .map(|conversion| conversion.codec);
+        match self.options.container {
+            Some(chosen) if gpu_codec.is_some_and(|codec| !chosen.holds(&codec)) => {
+                container_row = container_row.error(format!(
+                    "{} files can't hold GPU {} video. Choose another file type or GPU codec.",
+                    chosen.label(),
+                    gpu_codec.map_or("", |codec| codec.label())
+                ));
+            }
+            Some(VideoContainer::Avi) => {
+                container_row = container_row.help(
+                    "Re-encoded to Xvid video and MP3 audio after downloading, which takes a while.",
+                );
+            }
+            Some(chosen) if chosen.converted_by_app() => {
+                container_row = container_row.help(format!(
+                    "Converted after downloading. Streams {} can't hold are re-encoded, which takes longer.",
+                    chosen.label()
+                ));
+            }
+            _ => {}
+        }
+        rows.push(container_row);
         if !picking {
             let (options, selected) = self.codec_options();
             rows.push(Row::new(

@@ -20,7 +20,8 @@ The owner's standing requirements: nothing needs to be preinstalled (the app set
 | `src/integration/yt_dlp/{parser,runner}.rs` | The `__YTDLP_TUI__` sentinel protocol; the child process, read on both streams | `parse_protocol_line`, `run_download`, `read_lines` |
 | `src/integration/installer.rs` | Pinned tool download, size and SHA-256 checks, extraction, `installed.json` | `install`, `outdated_components` |
 | `src/integration/dependencies.rs` | Tool resolution (custom path, then managed folder; never `PATH`) and version checks | `DependencyManager` |
-| `src/integration/ffmpeg.rs` | NVENC/AMF runtime probes and GPU re-encoding | `inspect_hardware_acceleration`, `run_hardware_conversion` |
+| `src/integration/ffmpeg.rs` | NVENC/AMF runtime probes, GPU re-encoding, and the shared FFmpeg process runner | `inspect_hardware_acceleration`, `run_hardware_conversion`, `run_ffmpeg` |
+| `src/integration/container.rs` | MOV/AVI/WebM conversion after download: FFprobe streams, copy or re-encode each | `conversion_args`, `run_container_conversion` |
 | `src/persistence/database.rs` | SQLite queries; migrations live in `migrations/` | `Database` |
 | `src/tui/mod.rs` | Event loop, terminal setup and teardown, mouse capture, the input reader thread | `run` |
 | `src/tui/app.rs` | `App` state, key/paste/mouse routing, background work (`Message`), dialogs, engine setup | `handle_key`, `handle_message`, `click` |
@@ -59,6 +60,7 @@ The owner's standing requirements: nothing needs to be preinstalled (the app set
 - Unit tests sit beside the code. The App-level tests in `src/tui/app.rs` build a real `AppService` on a temp folder.
 - `tests/tui_pty.rs` drives the real binary through `Session`: `start`/`launch` (with `PATH` and arguments), `wait_for`, `wait_until_gone`, `click` (SGR mouse), `snapshot`. The fake engine's scenario comes from the link: `slow`, `cancel`, `failure` (analysis fails), `refused` (the download fails after a warning), `playlist`, anything else succeeds. `Session::clipboard` decodes the last OSC 52 copy. Each scenario gets its own `HOME`, data, and tools folders.
 - `tests/gpu_conversion.rs` is `#[ignore]` and needs an NVENC or AMF GPU: it converts an AV1 clip with GPU decoding requested.
+- `tests/container_conversion.rs` is `#[ignore]` and needs only the installed tools: it converts generated clips into MOV, AVI, and WebM and decodes each result. `live_download.rs` also downloads as MOV and AVI.
 - Live tests are `#[ignore]` and need the network; the README lists the commands. Use `https://www.youtube.com/watch?v=jNQXAC9IVRw`: yt-dlp's own test video `BaW_jenozKc` is unavailable.
 
 ## Gotchas
@@ -69,6 +71,7 @@ The owner's standing requirements: nothing needs to be preinstalled (the app set
 - **Escape merges in PTY tests.** Terminals send Alt+key as Escape followed by the key, so after sending Escape, wait for a screen state before the next key. After submitting New download, the job's `ServiceEvent` can update the list before `Message::Enqueued` closes the form, so wait for the form to be gone before sending keys to the list. Also wait for the exact text before `position_of`, since a frame can arrive half-drawn, and search for phrases that don't wrap.
 - **The notice bar replaces the key hints** for 4–8 s after a toast, so hint clicks and waits for hint text pause until it expires.
 - **GPU decode support depends on the codec and the card.** The startup check proves decoding only for H.264; an RTX 20-series card has no AV1 decoder, and FFmpeg with `-hwaccel_output_format cuda` then fails on every frame and never finishes. `decodes_on_gpu` checks the real input on one frame (`-xerror`) before each conversion and falls back to CPU decoding.
+- **Only MP4 and MKV hold every codec yt-dlp downloads.** Stream-copying H.264 into WebM, VP9/AV1/Opus into MOV, or almost anything into AVI fails, and yt-dlp's `--remux-video`/`--recode-video` choose by file extension, not codec. So MOV, AVI, and WebM skip yt-dlp's remux and go through `integration::container`, which asks FFprobe for the codecs. Without the MOV sort, YouTube's default pick is AV1+Opus, which would be re-encoded.
 - **sqlx 0.9 accepts only `'static` SQL strings**, so queries are literals.
 - **ureq readers are unlimited**; the installer enforces each artifact's pinned `size` itself.
 - **`PATH` is never searched for tools.** A system yt-dlp or FFmpeg is ignored unless chosen in Settings; a PTY test guards this.
