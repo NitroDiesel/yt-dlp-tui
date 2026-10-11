@@ -296,6 +296,57 @@ pub fn job_title(job: &DownloadJob) -> String {
         .unwrap_or_else(|| hostname(&job.request.url))
 }
 
+/// Everything known about a download as plain text, for pasting into a bug
+/// report: what was asked for, what happened, and every diagnostic line.
+pub fn technical_report(job: &DownloadJob) -> String {
+    let mut lines = vec![
+        format!(
+            "yt-dlp TUI {} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
+        format!("Title: {}", job_title(job)),
+        format!("Link: {}", job.request.url),
+        format!("Status: {}", status_label(job.status)),
+    ];
+    if let Some(stage) = &job.progress.stage {
+        lines.push(format!("Stage: {stage}"));
+    }
+    if let Some(message) = &job.error_message {
+        match &job.error_category {
+            Some(category) => lines.push(format!("Error ({category}): {message}")),
+            None => lines.push(format!("Error: {message}")),
+        }
+    }
+    lines.push(format!("Format: {}", format_summary(job)));
+    if let Some(clip) = clip_summary(job) {
+        lines.push(format!("Clip: {clip}"));
+    }
+    match &job.output_path {
+        Some(path) => lines.push(format!("File: {path}")),
+        None => lines.push(format!("Folder: {}", job.request.destination)),
+    }
+    lines.push(format!("Added: {}", job.created_at));
+    if let Some(started) = &job.started_at {
+        lines.push(format!("Started: {started}"));
+    }
+    if let Some(finished) = &job.finished_at {
+        lines.push(format!("Finished: {finished}"));
+    }
+    if let Ok(options) = serde_json::to_string(&job.request.options) {
+        lines.push(format!("Options: {options}"));
+    }
+    if !job.diagnostics.is_empty() {
+        lines.push(String::new());
+        lines.push("Technical details:".into());
+        lines.extend(job.diagnostics.iter().cloned());
+    }
+    let mut report = lines.join("\n");
+    report.push('\n');
+    report
+}
+
 pub fn status_label(status: JobStatus) -> &'static str {
     match status {
         JobStatus::Queued => "Waiting",

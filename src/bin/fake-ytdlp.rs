@@ -1,7 +1,8 @@
 //! A stand-in for yt-dlp used by tests. The link decides the scenario:
 //! links containing "cancel" never finish, "failure" fails like a rate limit,
-//! "slow" reports progress for a few seconds, "playlist" analyzes as a
-//! three-item playlist, and anything else succeeds.
+//! "refused" analyzes but fails to download with warnings first, "slow"
+//! reports progress for a few seconds, "playlist" analyzes as a three-item
+//! playlist, and anything else succeeds.
 
 use std::{path::PathBuf, thread, time::Duration};
 
@@ -41,6 +42,11 @@ fn main() {
     }
     if scenario.contains("failure") {
         eprintln!("ERROR: HTTP Error 429: Too Many Requests token=private-value");
+        std::process::exit(1);
+    }
+    if scenario.contains("refused") {
+        eprintln!("WARNING: [fixture] The first format was refused, trying the next");
+        eprintln!("ERROR: unable to download video data: HTTP Error 403: Forbidden");
         std::process::exit(1);
     }
     if scenario.contains("slow") {

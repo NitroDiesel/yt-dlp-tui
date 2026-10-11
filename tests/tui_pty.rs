@@ -20,6 +20,8 @@ struct Session {
     writer: Box<dyn Write + Send>,
     output: Receiver<Vec<u8>>,
     screen: vt100::Parser,
+    /// Everything the app wrote, for sequences the screen doesn't keep.
+    raw: Vec<u8>,
 }
 
 impl Session {
@@ -70,6 +72,7 @@ impl Session {
             writer,
             output,
             screen: vt100::Parser::new(ROWS, COLUMNS, 0),
+            raw: Vec::new(),
         }
     }
 
@@ -80,8 +83,10 @@ impl Session {
     fn pump(&mut self, wait: Duration) {
         if let Ok(bytes) = self.output.recv_timeout(wait) {
             self.screen.process(&bytes);
+            self.raw.extend_from_slice(&bytes);
             while let Ok(bytes) = self.output.try_recv() {
                 self.screen.process(&bytes);
+                self.raw.extend_from_slice(&bytes);
             }
         }
     }
@@ -145,10 +150,38 @@ impl Session {
         self.pump(Duration::from_millis(150));
     }
 
+    /// The text of the last clipboard write (OSC 52).
+    fn clipboard(&self) -> Option<String> {
+        let raw = String::from_utf8_lossy(&self.raw);
+        let start = raw.rfind("\x1b]52;c;")? + "\x1b]52;c;".len();
+        let end = start + raw[start..].find('\x07')?;
+        Some(String::from_utf8(decode_base64(&raw[start..end])).unwrap())
+    }
+
     fn snapshot(&mut self, title: &str) {
         self.pump(Duration::from_millis(200));
         println!("──── {title} ────\n{}\n", self.contents());
     }
+}
+
+fn decode_base64(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let values = text
+        .bytes()
+        .filter(|byte| *byte != b'=')
+        .map(|byte| ALPHABET.iter().position(|letter| *letter == byte).unwrap() as u32)
+        .collect::<Vec<_>>();
+    let mut bytes = Vec::new();
+    for chunk in values.chunks(4) {
+        let value = chunk
+            .iter()
+            .enumerate()
+            .fold(0, |value, (index, digit)| value | digit << (18 - 6 * index));
+        for index in 0..chunk.len() - 1 {
+            bytes.push((value >> (16 - 8 * index)) as u8);
+        }
+    }
+    bytes
 }
 
 fn fake_tools() -> tempfile::TempDir {
@@ -328,6 +361,39 @@ fn quitting_mid_download_leaves_it_ready_to_resume() {
     session.wait_for("Stopped 1");
     session.wait_for("Interrupted");
     session.wait_for("r retry");
+    session.send("q");
+    wait_for_exit(&mut session);
+}
+
+#[test]
+fn copies_the_technical_details_of_a_failed_download() {
+    let home = tempfile::tempdir().unwrap();
+    let tools = fake_tools();
+    let mut session = Session::start(home.path(), tools.path());
+    session.wait_for("Paste a link to start");
+    session.send("\x1b[200~https://example.test/refused\x1b[201~");
+    session.wait_for("Add to queue");
+    session.send("\x04");
+    session.wait_for("Stopped 1");
+    session.wait_for("Copy details");
+    session.snapshot("Failed download");
+    assert_eq!(session.clipboard(), None);
+
+    session.click("Copy details");
+    session.wait_for("Copied the technical details");
+    let report = session
+        .clipboard()
+        .expect("the details reach the clipboard");
+    assert!(report.starts_with("yt-dlp TUI "), "{report}");
+    assert!(
+        report.contains("Link: https://example.test/refused"),
+        "{report}"
+    );
+    assert!(report.contains("Status: Needs attention"), "{report}");
+    assert!(report.contains("HTTP Error 403: Forbidden"), "{report}");
+    assert!(report.contains("Technical details:"), "{report}");
+    assert!(report.contains("The first format was refused"), "{report}");
+
     session.send("q");
     wait_for_exit(&mut session);
 }

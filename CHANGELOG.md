@@ -2,6 +2,16 @@
 
 Each release's section here becomes its GitHub release notes.
 
+## v0.2.2
+
+### Copy the technical details
+
+- A download's details now have a **Copy details** button (or press `Y`) when it has an error or technical details. It copies the app version, the link, the status and error, the format, the file or folder, the times, the chosen options, and every diagnostic line, ready to paste into a bug report.
+
+### Fixed
+
+- GPU conversion no longer hangs when the GPU can't decode the video's format, such as AV1 on an NVIDIA RTX 20-series card or older. FFmpeg failed on every frame and never finished. Before converting, the app now checks one frame of the actual video; if the GPU can't decode it, the CPU decodes and the GPU still encodes. The details say when this happens.
+
 ## v0.2.1
 
 ### Installers and standalone executables

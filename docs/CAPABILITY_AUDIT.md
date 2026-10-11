@@ -26,7 +26,7 @@ Audited against yt-dlp **2026.08.19**, the latest stable release, which `packagi
 | Pick exact streams | `-f <video>+<audio>` from the analyzed formats |
 | Container | `--merge-output-format <c> --remux-video <c>` (video only) |
 | Video codec, Download as | `-S vcodec:avc\|vp9\|av01` |
-| Video codec, Convert on GPU | FFmpeg after download with the first working NVENC or AMF encoder; quality 1–51; optional GPU decode |
+| Video codec, Convert on GPU | FFmpeg after download with the first working NVENC or AMF encoder; quality 1–51; optional GPU decode, used only when the GPU decodes that input (checked on one frame), otherwise the CPU decodes |
 | Audio, original | `-f ba` |
 | Audio, converted | `-x --audio-format <f> --audio-quality <0\|bitrate>`, `--keep-video` |
 | Audio track | `ba[language^=<code>]` in the selector |

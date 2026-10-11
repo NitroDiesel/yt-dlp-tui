@@ -286,6 +286,56 @@ async fn runtime_decoder_probe(ffmpeg: &Path, input: &Path, backend: &str) -> bo
     .is_ok_and(|output| output.status.success())
 }
 
+/// The GPU check at startup decodes a test H.264 clip, but decoder support
+/// varies by codec and bit depth (a Turing card has no AV1 decoder). Without
+/// this check FFmpeg fails on every frame and never finishes, because frames
+/// kept on the GPU can't fall back to the CPU. This runs the real pipeline on
+/// one frame of the actual input; `-xerror` makes a failure end it at once.
+async fn decodes_on_gpu(
+    ffmpeg: &Path,
+    input: &Path,
+    backend: &str,
+    encoder: &HardwareEncoderInfo,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (ffmpeg, input, backend, encoder);
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let args = decode_probe_args(input, backend, encoder);
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_probe(ffmpeg, &refs)
+            .await
+            .is_ok_and(|output| output.status.success())
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn decode_probe_args(input: &Path, backend: &str, encoder: &HardwareEncoderInfo) -> Vec<String> {
+    let mut args = [
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-xerror",
+        "-hwaccel",
+        backend,
+        "-hwaccel_output_format",
+        if backend == "cuda" { "cuda" } else { "d3d11" },
+        "-i",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.push(input.to_string_lossy().into_owned());
+    args.extend(["-map", "0:v:0", "-frames:v", "1", "-c:v"].map(String::from));
+    args.push(encoder.encoder.clone());
+    append_encoder_options(&mut args, &encoder.provider, 23);
+    args.extend(["-f", "null", "-"].map(String::from));
+    args
+}
+
 fn append_encoder_options(args: &mut Vec<String>, provider: &HardwareEncoderProvider, quality: u8) {
     match provider {
         HardwareEncoderProvider::Nvenc => args.extend([
@@ -377,11 +427,22 @@ pub async fn run_hardware_conversion(
         .arg("-loglevel")
         .arg("warning")
         .arg("-y");
-    if options.use_hardware_decode && encoder.decode_available {
-        let backend = encoder
-            .decode_backend
-            .as_deref()
-            .ok_or_else(|| AppError::Process("GPU decoder backend is unavailable".into()))?;
+    let mut decode_note = None;
+    let decode_backend = match encoder.decode_backend.as_deref() {
+        Some(backend) if options.use_hardware_decode && encoder.decode_available => {
+            if decodes_on_gpu(ffmpeg, &input, backend, encoder).await {
+                Some(backend)
+            } else {
+                decode_note = Some(format!(
+                    "The GPU can't decode this video's format, so the CPU decodes it and {} encodes it.",
+                    encoder.provider.label()
+                ));
+                None
+            }
+        }
+        _ => None,
+    };
+    if let Some(backend) = decode_backend {
         command
             .arg("-hwaccel")
             .arg(backend)
@@ -426,7 +487,10 @@ pub async fn run_hardware_conversion(
         .stderr
         .take()
         .ok_or_else(|| AppError::Process("FFmpeg diagnostic output is unavailable".into()))?;
-    let diagnostics = Arc::new(Mutex::new(Vec::<String>::new()));
+    if let Some(note) = &decode_note {
+        let _ = events.send(RunnerEvent::Diagnostic(note.clone()));
+    }
+    let diagnostics = Arc::new(Mutex::new(decode_note.into_iter().collect::<Vec<_>>()));
     let diagnostic_state = diagnostics.clone();
     let diagnostic_events = events.clone();
     let stderr_task = tokio::spawn(async move {
@@ -561,6 +625,30 @@ mod tests {
                 .any(|pair| pair == ["-qvbr_quality_level", "24"])
         );
         assert!(!amf.iter().any(|value| value == "-cq"));
+    }
+
+    #[test]
+    fn decode_check_runs_the_real_pipeline_on_the_input_and_stops_at_the_first_error() {
+        let encoder = HardwareEncoderInfo {
+            provider: HardwareEncoderProvider::Nvenc,
+            codec: crate::domain::HardwareCodec::H264,
+            encoder: "h264_nvenc".into(),
+            compiled: true,
+            available: true,
+            decode_backend: Some("cuda".into()),
+            decode_available: true,
+            message: None,
+        };
+        let args = decode_probe_args(Path::new("/videos/clip.webm"), "cuda", &encoder);
+        let has = |pair: [&str; 2]| args.windows(2).any(|window| window == pair);
+        assert!(args.iter().any(|arg| arg == "-xerror"));
+        assert!(has(["-hwaccel", "cuda"]));
+        assert!(has(["-hwaccel_output_format", "cuda"]));
+        assert!(has(["-i", "/videos/clip.webm"]));
+        assert!(has(["-frames:v", "1"]));
+        assert!(has(["-c:v", "h264_nvenc"]));
+        assert!(has(["-cq", "23"]));
+        assert_eq!(args[args.len() - 3..], ["-f", "null", "-"]);
     }
 
     #[test]

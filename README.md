@@ -50,6 +50,7 @@ Copy a link and paste it into the terminal, or press `n`. The form reads the lin
 | `c` / `r` / `d` | Cancel / retry / remove from the list |
 | `o` / `f` | Open the file / show it in its folder |
 | `y` | Copy the source link (OSC 52, works over SSH) |
+| `Y` | Copy the technical details: the request, the error, and every diagnostic line, ready for a bug report |
 | `K` / `J` | Move a waiting download up or down |
 | `p` | Pause or resume the queue |
 | `C` | Clear completed downloads from the list |
@@ -85,6 +86,8 @@ cargo run -- install-tools
 export YT_DLP_TUI_LIVE_TOOLS="$(cargo run -q -- paths | sed -n 's/^Tools: //p')"
 cargo test --test live_download --test tui_pty -- --ignored --skip a_fresh_machine --nocapture
 ```
+
+On a machine with an NVIDIA or AMD GPU, `cargo test --test gpu_conversion -- --ignored --nocapture` (with the same variable) checks GPU conversion of an AV1 video.
 
 - [Architecture and security decisions](docs/ARCHITECTURE.md)
 - [Audited yt-dlp capability mapping](docs/CAPABILITY_AUDIT.md)

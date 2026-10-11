@@ -571,6 +571,9 @@ fn render_details(frame: &mut Frame, area: Rect, job: &DownloadJob, app: &App, h
         actions.extend([("Open file", 'o'), ("Show in folder", 'f')]);
     }
     actions.push(("Copy link", 'y'));
+    if !job.diagnostics.is_empty() || job.error_message.is_some() {
+        actions.push(("Copy details", 'Y'));
+    }
     if !job.status.is_running() {
         actions.push(("Remove", 'd'));
     }
@@ -1111,6 +1114,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
             ("d", "Remove from the list (never deletes files)"),
             ("o / f", "Open the file / show it in its folder"),
             ("y", "Copy the source link"),
+            ("Y", "Copy the technical details, for a bug report"),
             ("K / J", "Move a waiting download up or down"),
             ("p", "Pause or resume the queue"),
             ("C", "Clear completed downloads from the list"),

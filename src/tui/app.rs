@@ -1276,6 +1276,10 @@ impl App {
                 copy_to_clipboard(&job.request.url);
                 self.notify("Copied the source link", false);
             }
+            KeyCode::Char('Y') => {
+                copy_to_clipboard(&super::format::technical_report(&job));
+                self.notify("Copied the technical details", false);
+            }
             _ => {}
         }
     }
